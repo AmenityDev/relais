@@ -1,0 +1,167 @@
+# Task runner (https://taskfile.dev). Install with:
+#   go install github.com/go-task/task/v3/cmd/task@latest
+#
+# Every recipe here is a plain command sequence, so nothing depends on task
+# being installed: read a target and run it by hand if you prefer.
+
+version: "3"
+
+vars:
+  MODULE: github.com/amenitydev/relais
+  BIN: bin/relais
+  IMAGE: relais
+  # Overridden in CI with the release tag.
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+
+dotenv: [".env"]
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  setup:
+    desc: Create .env with freshly generated keys (safe to re-run)
+    # The repository ships no key material, so a new checkout has to generate its
+    # own. This is that step, kept to one command so nobody is tempted to paste a
+    # key from somewhere public.
+    cmds:
+      - |
+        set -e
+        if [ ! -f .env ]; then
+          cp .env.example .env
+          echo "created .env from .env.example"
+        fi
+        if grep -qE '^RELAIS_SECRET_ENCRYPTION_KEYS=.+' .env; then
+          echo "RELAIS_SECRET_ENCRYPTION_KEYS is already set, leaving it alone"
+        else
+          key=$(go run ./cmd/relais keygen key 2>/dev/null)
+          sed -i "s|^RELAIS_SECRET_ENCRYPTION_KEYS=.*|RELAIS_SECRET_ENCRYPTION_KEYS=$key|" .env
+          echo "generated RELAIS_SECRET_ENCRYPTION_KEYS"
+        fi
+        if grep -qE '^RELAIS_SECRET_CREDENTIAL_PEPPER=.+' .env; then
+          echo "RELAIS_SECRET_CREDENTIAL_PEPPER is already set, leaving it alone"
+        else
+          pepper=$(go run ./cmd/relais keygen pepper 2>/dev/null)
+          sed -i "s|^RELAIS_SECRET_CREDENTIAL_PEPPER=.*|RELAIS_SECRET_CREDENTIAL_PEPPER=$pepper|" .env
+          echo "generated RELAIS_SECRET_CREDENTIAL_PEPPER"
+        fi
+        echo
+        echo "Next: docker compose up -d && task migrate"
+
+  build:
+    desc: Build the binary
+    cmds:
+      - >
+        CGO_ENABLED=0 go build -trimpath
+        -ldflags "-s -w -X {{.MODULE}}/internal/obs.Version={{.VERSION}}"
+        -o {{.BIN}} ./cmd/relais
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - "{{.BIN}}"
+
+  test:
+    desc: Run the test suite (database-backed tests skip if Postgres is down)
+    cmds:
+      - go test -race ./...
+
+  test:all:
+    desc: Run everything, requiring a database (this is what CI should run)
+    # Setting RELAIS_TEST_DB_URL makes the database mandatory: an unreachable one
+    # fails instead of skipping, because a silently skipped integration suite
+    # looks exactly like a passing one.
+    env:
+      RELAIS_TEST_DB_URL: '{{.RELAIS_TEST_DB_URL | default "postgres://relais:relais@127.0.0.1:5432/relais?sslmode=disable"}}'
+    cmds:
+      - go test -race -count=1 ./...
+
+  fuzz:
+    desc: Fuzz the sender-pattern matcher (the security-critical parser)
+    vars:
+      TIME: '{{.TIME | default "60s"}}'
+    cmds:
+      - go test ./internal/frompattern/ -run=XXX -fuzz='^FuzzParse$' -fuzztime={{.TIME}}
+      - go test ./internal/frompattern/ -run=XXX -fuzz='^FuzzParseAddressAgainstWildcardPattern$' -fuzztime={{.TIME}}
+
+  lint:
+    desc: Vet, format check and module tidiness
+    cmds:
+      - go vet ./...
+      - test -z "$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
+      - go mod tidy -diff
+
+  generate:
+    desc: Regenerate the sqlc query layer
+    cmds:
+      - sqlc generate
+    sources:
+      - sqlc.yaml
+      - internal/db/queries/*.sql
+      - internal/db/migrations/*.sql
+    generates:
+      - internal/db/gen/*.go
+
+  dev:up:
+    desc: Start the development infrastructure (Postgres + a local SMTP sink)
+    deps: [setup]
+    cmds:
+      - docker compose up -d
+      - docker compose ps
+
+  dev:down:
+    desc: Stop the development infrastructure, keeping the data volume
+    cmds:
+      - docker compose down
+
+  dev:reset:
+    desc: Destroy the development database and recreate the schema
+    prompt: This deletes the local database. Continue?
+    cmds:
+      - docker compose down -v
+      - docker compose up -d
+      # Wait for the healthcheck rather than sleeping a guessed number of
+      # seconds.
+      - until [ "$(docker inspect -f '{{`{{.State.Health.Status}}`}}' relais-dev-postgres-1)" = healthy ]; do sleep 1; done
+      - task: migrate
+
+  migrate:
+    desc: Apply pending migrations
+    cmds:
+      - go run ./cmd/relais migrate up
+
+  migrate:status:
+    desc: Show migration status
+    cmds:
+      - go run ./cmd/relais migrate status
+
+  serve:
+    desc: Run the service against the development infrastructure
+    cmds:
+      - go run ./cmd/relais serve
+
+  keys:
+    desc: Print fresh key material for a new environment
+    cmds:
+      - go run ./cmd/relais keygen key
+      - go run ./cmd/relais keygen pepper
+
+  docker:build:
+    desc: Build the production image for the local architecture
+    cmds:
+      - docker build -f deploy/Dockerfile --build-arg VERSION={{.VERSION}} -t {{.IMAGE}}:{{.VERSION}} .
+
+  docker:buildx:
+    desc: Build and push the multi-arch image (set REGISTRY)
+    preconditions:
+      - sh: test -n "$REGISTRY"
+        msg: "Set REGISTRY, e.g. REGISTRY=ghcr.io/you task docker:buildx"
+    cmds:
+      - >
+        docker buildx build --platform linux/amd64,linux/arm64
+        -f deploy/Dockerfile --build-arg VERSION={{.VERSION}}
+        -t $REGISTRY/{{.IMAGE}}:{{.VERSION}} --push .

@@ -1,0 +1,96 @@
+# Development stack.
+#
+#   docker compose up -d              Postgres + a local SMTP sink
+#   docker compose --profile app up   ...plus relais itself, built from source
+#
+# By default only the infrastructure runs, so that relais can be run from the
+# host with `go run ./cmd/relais serve` and a debugger attached.
+#
+# This file is for development. Production deployment (Coolify) uses
+# deploy/Dockerfile with configuration supplied by the platform.
+
+name: relais-dev
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    # Survives a Docker daemon restart or a reboot, so the development stack does
+    # not silently disappear between sessions. "unless-stopped" still respects an
+    # explicit `docker compose stop`.
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: relais
+      POSTGRES_PASSWORD: relais
+      POSTGRES_DB: relais
+      # Speeds up the initial cluster creation; irrelevant to production, where
+      # the database is managed separately.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      # Published on loopback only: a development database must not be reachable
+      # from the local network.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # Postgres 18 images expect a single mount at /var/lib/postgresql and put
+      # the cluster in a version-specific subdirectory, which is what makes
+      # `pg_upgrade --link` possible later. Mounting .../data instead (the
+      # pre-18 convention) leaves the volume unused and the data ephemeral.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relais -d relais"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Mailpit stands in for OCI Email Delivery: it accepts anything and shows the
+  # result at http://127.0.0.1:8025. Register it as a backend with
+  # `-tls none`, which the schema only allows because it carries no credentials.
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    ports:
+      - "127.0.0.1:1025:1025" # SMTP
+      - "127.0.0.1:8025:8025" # web UI
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  relais:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RELAIS_ENV: dev
+      RELAIS_OBS_LOG_FORMAT: text
+      RELAIS_OBS_LOG_LEVEL: debug
+      RELAIS_DB_URL: postgres://relais:relais@postgres:5432/relais?sslmode=disable
+      # Taken from the environment, or from .env which Compose reads on its own.
+      # No default: a committed key is a key every reader of this repository has,
+      # and the ":?" form fails the command with this message rather than starting
+      # with one. Run `task setup` to generate a pair.
+      RELAIS_SECRET_ENCRYPTION_KEYS: ${RELAIS_SECRET_ENCRYPTION_KEYS:?missing - run "task setup", or "relais keygen key" and put the value in .env}
+      RELAIS_SECRET_CREDENTIAL_PEPPER: ${RELAIS_SECRET_CREDENTIAL_PEPPER:?missing - run "task setup", or "relais keygen pepper" and put the value in .env}
+      # A generated certificate is fine here and is refused outright when
+      # RELAIS_ENV is prod.
+      RELAIS_TLS_SELF_SIGNED: "true"
+      RELAIS_TLS_SELF_SIGNED_HOSTS: "localhost,127.0.0.1,relais"
+    ports:
+      - "127.0.0.1:8080:8080"
+      # 587 outside, unprivileged 2525 inside: no capability needed.
+      - "127.0.0.1:587:2525"
+    # Migrations are a deliberate step, never implicit in serve.
+    command: ["serve"]
+
+volumes:
+  postgres-data:

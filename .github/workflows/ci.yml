@@ -1,0 +1,167 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So a broken CI can be re-run without pushing an empty commit.
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # The version comes from go.mod, so CI cannot drift from what the
+          # project actually builds with.
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go mod tidy is up to date
+        run: go mod tidy -diff
+
+      - name: Generated query layer matches the queries
+        # Catches the case where someone edits a .sql file and forgets to
+        # regenerate: the committed Go would silently keep the old query.
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+          sqlc diff
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Same major version as production, so a behavioural difference cannot
+        # hide between CI and the real database.
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: relais
+          POSTGRES_PASSWORD: relais
+          POSTGRES_DB: relais
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relais -d relais"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      RELAIS_DB_URL: postgres://relais:relais@127.0.0.1:5432/relais?sslmode=disable
+      # Setting this makes the database MANDATORY for the integration tests: an
+      # unreachable one fails the run instead of skipping. Without it, a
+      # misconfigured service container would produce a green build that tested
+      # none of the pipeline, the store, or either façade — which is worse than a
+      # red one, because nobody would look.
+      RELAIS_TEST_DB_URL: postgres://relais:relais@127.0.0.1:5432/relais?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Apply migrations
+        # Migrations are never implicit in serve, so CI runs them as its own step,
+        # exactly as a deployment does.
+        run: go run ./cmd/relais migrate up
+
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
+
+      - name: Confirm the integration tests actually ran
+        # A skip here would mean the suite silently stopped covering the database,
+        # which is the failure mode RELAIS_TEST_DB_URL exists to prevent. Belt and
+        # braces: assert it out loud rather than trusting the variable was read.
+        run: |
+          go test -count=1 -v -run 'TestEndToEndDelivery' ./internal/jobs/ | tee result.txt
+          if grep -q '^--- SKIP' result.txt; then
+            echo "The end-to-end delivery test skipped: the database was not reachable."
+            exit 1
+          fi
+          grep -q '^--- PASS: TestEndToEndDelivery' result.txt
+
+  fuzz:
+    name: Fuzz the sender-pattern matcher
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The pattern grammar decides what every credential is allowed to send as.
+      # A short run on every change is cheap, and a crasher found here is found
+      # before it reaches a deployment.
+      - name: Fuzz Parse
+        run: go test ./internal/frompattern/ -run=XXX -fuzz='^FuzzParse$' -fuzztime=45s
+
+      - name: Fuzz the wildcard containment property
+        run: |
+          go test ./internal/frompattern/ -run=XXX \
+            -fuzz='^FuzzParseAddressAgainstWildcardPattern$' -fuzztime=45s
+
+      - name: Fuzz the message normalizer
+        run: go test ./internal/mailnorm/ -run=XXX -fuzz='^FuzzParse$' -fuzztime=45s
+
+      - name: Upload any crasher
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-corpus
+          path: |
+            internal/frompattern/testdata/fuzz/
+            internal/mailnorm/testdata/fuzz/
+          if-no-files-found: ignore
+
+  image:
+    name: Build the container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Build only, never push: this job exists to catch a broken Dockerfile, and
+      # publishing is a release decision rather than a CI one.
+      - name: Build for amd64 and arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

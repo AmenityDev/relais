@@ -1,0 +1,34 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # The schema is read straight from the goose migrations, so a query can
+    # never drift from the tables it targets: sqlc fails to generate if it does.
+    schema: internal/db/migrations
+    queries: internal/db/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/db/gen
+        sql_package: pgx/v5
+        emit_interface: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+        overrides:
+          # Plain time.Time reads far better than pgtype.Timestamptz at every
+          # call site, and NOT NULL columns can never be "invalid" anyway.
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true

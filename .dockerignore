@@ -1,0 +1,17 @@
+# Keep the build context small and free of anything secret.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.md
+docs/
+web/node_modules/
+web/.svelte-kit/
+web/build/
+dist/
+bin/
+certs/
+testdata/fuzz/
+docker-compose*.yaml
+Taskfile.yml
