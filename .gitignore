@@ -3,10 +3,12 @@
 .env.local
 certs/
 
-# Build output.
+# Build output. Every pattern here is anchored with a leading slash: a bare
+# "relais" would match at any depth and silently exclude cmd/relais from the
+# repository, which is exactly what it did once.
 /bin/
 /dist/
-relais
+/relais
 
 # Go test and fuzz artefacts.
 *.test

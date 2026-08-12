@@ -29,6 +29,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: The checkout is complete
+        # A .gitignore pattern without a leading slash matches at any depth. A bare
+        # "relais" once excluded cmd/relais from the repository, so this workflow
+        # ran against a tree with no main package and three jobs failed with
+        # "directory not found" rather than anything about the code. Fail here
+        # instead, with a message that names the cause.
+        run: |
+          for d in cmd/relais internal deploy; do
+            if [ ! -e "$d" ]; then
+              echo "$d is missing from the checkout: something in .gitignore excludes it."
+              echo "Check with: git check-ignore -v $d"
+              exit 1
+            fi
+          done
+
       - name: go vet
         run: go vet ./...
 
@@ -88,6 +103,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: The checkout is complete
+        # A .gitignore pattern without a leading slash matches at any depth. A bare
+        # "relais" once excluded cmd/relais from the repository, so this workflow
+        # ran against a tree with no main package and three jobs failed with
+        # "directory not found" rather than anything about the code. Fail here
+        # instead, with a message that names the cause.
+        run: |
+          for d in cmd/relais internal deploy; do
+            if [ ! -e "$d" ]; then
+              echo "$d is missing from the checkout: something in .gitignore excludes it."
+              echo "Check with: git check-ignore -v $d"
+              exit 1
+            fi
+          done
 
       - name: Apply migrations
         # Migrations are never implicit in serve, so CI runs them as its own step,
@@ -149,6 +179,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: The checkout is complete
+        # A .gitignore pattern without a leading slash matches at any depth. A bare
+        # "relais" once excluded cmd/relais from the repository, so this workflow
+        # ran against a tree with no main package and three jobs failed with
+        # "directory not found" rather than anything about the code. Fail here
+        # instead, with a message that names the cause.
+        run: |
+          for d in cmd/relais internal deploy; do
+            if [ ! -e "$d" ]; then
+              echo "$d is missing from the checkout: something in .gitignore excludes it."
+              echo "Check with: git check-ignore -v $d"
+              exit 1
+            fi
+          done
 
       - uses: docker/setup-buildx-action@v4
 

@@ -286,18 +286,22 @@ func Load() (*Config, error) {
 	return LoadFrom(nil)
 }
 
-// LoadFrom reads the configuration, overlaying the given map on top of the
-// process environment. It exists for tests; production code calls Load.
+// LoadFrom reads the configuration from the given map, which replaces the
+// process environment entirely rather than layering on top of it. It exists for
+// tests; production code calls Load, which passes nil and so reads the real
+// environment. A non-nil map, empty or not, replaces it: the parser treats its
+// Environment option as unset only when the map is nil, never when it is merely
+// empty.
+//
+// The replacement is deliberate. Merging over os.Environ() made every test
+// depend on the shell that launched it: a test asserting that an absent
+// RELAIS_DB_URL is rejected passed on a developer's machine and failed in CI,
+// where that variable is exported for the database-backed tests. A test that
+// only holds for one environment is not a test, so the map is the whole truth
+// and an absent key is absent.
 func LoadFrom(overlay map[string]string) (*Config, error) {
 	cfg := &Config{}
 	opts := env.Options{Prefix: envPrefix, Environment: overlay, UseFieldNameByDefault: false}
-	if overlay != nil {
-		merged := env.ToMap(os.Environ())
-		for k, v := range overlay {
-			merged[k] = v
-		}
-		opts.Environment = merged
-	}
 	if err := env.ParseWithOptions(cfg, opts); err != nil {
 		return cfg, fmt.Errorf("parse environment: %w", err)
 	}

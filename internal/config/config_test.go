@@ -17,6 +17,10 @@ func minimal() map[string]string {
 	}
 }
 
+// loadWith builds a configuration from minimal() plus the given overrides. An
+// override with an empty value means "this variable is not set at all", which
+// only works because LoadFrom replaces the process environment rather than
+// layering on top of it.
 func loadWith(t *testing.T, overrides map[string]string) *Config {
 	t.Helper()
 	env := minimal()
@@ -138,6 +142,33 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not mention %q", err, want)
 		}
+	}
+}
+
+// A configuration test that reads the ambient environment is not a test: it
+// reports on the shell that launched it. This one failed in CI while passing
+// locally, because CI exports RELAIS_DB_URL for the database-backed tests and
+// LoadFrom used to merge that in behind the overlay's back.
+func TestLoadFromIgnoresTheProcessEnvironment(t *testing.T) {
+	t.Setenv("RELAIS_DB_URL", "postgres://ambient:leaked@127.0.0.1:5432/leaked")
+	t.Setenv("RELAIS_HTTP_ADDR", ":9999")
+
+	cfg := loadWith(t, map[string]string{"RELAIS_DB_URL": ""})
+	if cfg.Database.URL != "" {
+		t.Fatalf("Database.URL leaked from the process environment: %q", cfg.Database.URL)
+	}
+	if err := cfg.RequireDatabase(); err == nil {
+		t.Fatal("RequireDatabase accepted an empty DSN")
+	}
+	if cfg.HTTP.Addr != ":8080" {
+		t.Fatalf("HTTP.Addr came from the environment, not the default: %q", cfg.HTTP.Addr)
+	}
+
+	// The nil overlay is the production path and must still read the real
+	// environment, or Load would configure nothing.
+	live, _ := LoadFrom(nil)
+	if live.HTTP.Addr != ":9999" {
+		t.Fatalf("a nil overlay ignored the process environment: HTTP.Addr = %q", live.HTTP.Addr)
 	}
 }
 
