@@ -59,6 +59,14 @@ jobs:
       - name: go mod tidy is up to date
         run: go mod tidy -diff
 
+      - name: Committed OpenAPI documents match the code
+        # The documents are generated from the structs that serve the requests, so
+        # a handler whose response type changed without a regeneration would ship
+        # TypeScript types that describe an API the server no longer has.
+        run: |
+          go run ./cmd/relais openapi -surface admin -check docs/openapi-admin.json
+          go run ./cmd/relais openapi -surface public -check docs/openapi-public.json
+
       - name: Generated query layer matches the queries
         # Catches the case where someone edits a .sql file and forgets to
         # regenerate: the committed Go would silently keep the old query.

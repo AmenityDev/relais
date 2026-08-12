@@ -94,6 +94,19 @@ tasks:
       - go vet ./...
       - test -z "$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
       - go mod tidy -diff
+      - go run ./cmd/relais openapi -surface admin -check docs/openapi-admin.json
+      - go run ./cmd/relais openapi -surface public -check docs/openapi-public.json
+
+  openapi:
+    desc: Regenerate the OpenAPI documents from the Go types
+    cmds:
+      - go run ./cmd/relais openapi -surface admin -o docs/openapi-admin.json
+      - go run ./cmd/relais openapi -surface public -o docs/openapi-public.json
+    sources:
+      - internal/httpapi/*.go
+    generates:
+      - docs/openapi-admin.json
+      - docs/openapi-public.json
 
   generate:
     desc: Regenerate the sqlc query layer

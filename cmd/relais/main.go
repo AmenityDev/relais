@@ -62,6 +62,8 @@ func run(ctx context.Context, args []string) error {
 		return cmdCredential(ctx, rest)
 	case "healthcheck":
 		return cmdHealthcheck(ctx, rest)
+	case "openapi":
+		return cmdOpenAPI(rest)
 	case "version":
 		fmt.Println(versionString())
 		return nil
@@ -90,6 +92,7 @@ Commands:
   credential create|list|show|revoke|pattern
                            Manage sender credentials and their allow-lists
   healthcheck              Probe the readiness endpoint (for HEALTHCHECK)
+  openapi                  Emit the OpenAPI description of a surface
   version                  Print the build version
 
 Configuration comes from the environment; every variable is prefixed RELAIS_.

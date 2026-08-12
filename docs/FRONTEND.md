@@ -238,8 +238,45 @@ web/
 
 ---
 
-## Still to do before M8 starts
+## Prerequisites
 
-- An OpenAPI document emitted by the Go side, from which the TypeScript types are
-  generated. Written by hand they drift, exactly like the pattern grammar would.
-- The cookie-size guard rail described in F3.
+- ✅ **OpenAPI emitted by the Go side**, from which the TypeScript types are
+  generated. See F12.
+- ⬜ The cookie-size guard rail described in F3.
+
+### F12 — the API description is generated, never written
+
+`relais openapi -surface admin|public` emits an OpenAPI 3.1 document by reflecting
+over the request and response structs that actually serve the requests. The
+TypeScript types come from that document, so they cannot describe an API the
+server does not have.
+
+Two documents, not one: the surfaces sit on separately exposed listeners, and
+merging them would blur the boundary F11 exists to draw.
+
+What reflection cannot see is stated explicitly in the route table and then
+checked:
+
+- **which fields a create requires.** The same Go struct serves a create and a
+  patch, and those are different contracts. Each is published under its own name
+  (`BackendInput` demands a host, `BackendPatch` changes only what it mentions), so
+  the generated types never tell the UI to resend a value it never displayed.
+- **a type whose JSON is not its Go shape.** `addressList` is a `[]string` that
+  also accepts a bare string. Described from its Go shape alone, the generated
+  types would reject a payload the API accepts. A test fails if any
+  `json.Unmarshaler` lacks an explicit schema.
+
+Kept honest by 15 tests, each verified by mutation:
+
+| Guard | What it catches |
+| --- | --- |
+| `chi.Walk` ≡ route table, both directions | a route served but undocumented, or documented but not served |
+| write flags ≡ `requireWrite` group | a control the UI would render for a viewer, or hide from an editor |
+| every write refuses a viewer (403) | the flag agreeing with the table but not with reality |
+| every operation refuses no token (401) | anonymous access, which has no exception |
+| no response schema names a secret | a password, fingerprint or body reaching a payload |
+| determinism over 8 renderings | a diff on every run, which would make CI's check noise |
+| committed document ≡ fresh one (CI) | a handler changed without regenerating |
+
+The last is `relais openapi -check`, run in CI beside `sqlc diff` for the same
+reason.
