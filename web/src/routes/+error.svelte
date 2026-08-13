@@ -21,6 +21,8 @@
 	{#if page.error?.requestId}
 		<p class="mt-4 text-xs text-slate-500">
 			Request <code class="font-mono">{page.error.requestId}</code>
+			<!-- The same id appears in the Go logs: this app forwards it as X-Request-Id,
+			     which is what lets one search cover both halves. -->
 		</p>
 	{/if}
 

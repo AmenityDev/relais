@@ -138,9 +138,8 @@ accident: there is exactly one implementation, with exactly one set of callers.
 | M5 | REST façade | `POST/GET /v1/emails`, bearer auth, rate limit, idempotency | ✅ |
 | M6 | SMTP façade | submission, STARTTLS, post-TLS AUTH, reuses `ingest` | ✅ |
 | M7 | Admin API | full CRUD, OIDC JWT + RBAC, dry runs, separate listener | ✅ |
-| M8 | SvelteKit | OIDC (arctic), screens, HyperDX link | ⬜ |
-| M8.1 | OpenAPI generated from the Go types, with 15 anti-drift tests | ✅ |
-| M8 | SvelteKit admin: six screens, BFF, 61 tests | ✅ |
+| M8a | OpenAPI | generated from the Go types, 15 anti-drift tests, CI diff | ✅ |
+| M8b | SvelteKit | BFF, OIDC discovery, six screens, 67 tests | ✅ |
 | M9 | Packaging | multi-arch buildx, GitHub Actions CI, Coolify runbook | partial |
 
 **The backend is complete.** `serve` exposes the REST API, the submission server,
@@ -235,6 +234,26 @@ runner, exercised by every database-backed test), `obs` (telemetry wiring), and
 ---
 
 ## 4. Notes for what follows
+- **Point the tests at their own database.** The database-backed tests TRUNCATE every
+  table between cases. With `RELAIS_TEST_DB_URL` aimed at the development database,
+  every `go test ./...` silently wiped the relays, domains and messages someone was
+  working with — no error, just an empty interface later. The dev Postgres now creates
+  `relais_test` on first start, and both `task test:all` and CI use it.
+- **A generated document can still describe the wrong wire format.** `writeError`
+  wraps every error as `{"error": {...}}` while the route table named the inner type,
+  so the published schema — and the TypeScript generated from it — described a shape
+  the server never sends. Every API error reached the operator as a bare status code.
+  Fifteen anti-drift tests all agreed with each other because they compared names
+  derived from the same Go types; none compared a real response body against its
+  schema. `TestErrorResponsesMatchTheDocumentedSchema` now does.
+- **Grepping rendered HTML for a value proves the data reached the page, not that
+  anything renders it.** A log-link check passed because SvelteKit serialises load
+  data into the document; the template edit had never applied. Assert on the visible
+  text.
+- **A stale build is not a bug.** Rebuilding `web/build` under a running adapter-node
+  server makes it 500 on any route chunk it had not yet loaded. It reads exactly like
+  a regression.
+
 - **Bind the port before announcing the listener.** `ListenAndServe` binds inside
   the goroutine, so "http listener started" was logged whether or not the port was
   free, and a bind failure then raced the sibling shutdown goroutine: `Shutdown`

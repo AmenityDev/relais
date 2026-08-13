@@ -119,9 +119,15 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(patternValidationResponse{}): "PatternValidation",
 	reflect.TypeOf(patternTestResponse{}):       "PatternTest",
 	reflect.TypeOf(resolveResponse{}):           "ResolveResult",
-	reflect.TypeOf(errorBody{}):                 "Error",
-	reflect.TypeOf(sendResponse{}):              "SendResult",
-	reflect.TypeOf(requestAttachment{}):         "Attachment",
+	// errorEnvelope, not errorBody: writeError wraps every error as
+	// {"error": {...}}. Naming the inner type here described a shape the server never
+	// sends, and the generated TypeScript then read `code` off the envelope and found
+	// nothing — so every API error reached the operator as a bare status code. Caught
+	// by sending a real 422 through the interface, not by any test.
+	reflect.TypeOf(errorEnvelope{}):     "Error",
+	reflect.TypeOf(errorBody{}):         "ErrorDetail",
+	reflect.TypeOf(sendResponse{}):      "SendResult",
+	reflect.TypeOf(requestAttachment{}): "Attachment",
 
 	reflect.TypeOf(listResponse[backendResponse]{}):      "BackendList",
 	reflect.TypeOf(listResponse[domainResponse]{}):       "DomainList",
@@ -452,7 +458,7 @@ func OpenAPI(surface Surface, version string) ([]byte, error) {
 
 	// Every operation can fail this way, so documenting it per operation would be
 	// noise that hides the ones that differ.
-	if _, err := gen.ref(reflect.TypeOf(errorBody{}), kindResponse); err != nil {
+	if _, err := gen.ref(reflect.TypeOf(errorEnvelope{}), kindResponse); err != nil {
 		return nil, err
 	}
 
@@ -641,6 +647,13 @@ func (b *schemaBuilder) operation(op apiOperation) (map[string]any, error) {
 	// write. Listing them once here rather than in each table entry keeps the
 	// table about what differs.
 	statuses := append([]int{401, 403}, op.Errors...)
+	// Any operation that decodes a body can be handed malformed JSON, which is a 400
+	// rather than the 422 an unacceptable-but-well-formed body gets. Derived from the
+	// presence of a request body instead of repeated in the table, so it cannot be
+	// forgotten on a new operation.
+	if op.Request != nil {
+		statuses = append(statuses, 400)
+	}
 	seen := map[int]bool{}
 	for _, code := range statuses {
 		if seen[code] {
@@ -664,6 +677,8 @@ func (b *schemaBuilder) operation(op apiOperation) (map[string]any, error) {
 
 func statusDescription(code int) string {
 	switch code {
+	case 400:
+		return "The body is not valid JSON."
 	case 401:
 		return "No credential, or one that is not valid."
 	case 403:

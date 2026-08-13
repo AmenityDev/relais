@@ -3,6 +3,7 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import CopyOnce from '$lib/components/CopyOnce.svelte';
+	import Dialog from '$lib/components/Dialog.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import Field from '$lib/components/Field.svelte';
 	import Table from '$lib/components/Table.svelte';
@@ -12,6 +13,7 @@
 
 	const created = $derived(form && 'created' in form ? form.created : undefined);
 	const values = $derived((form && 'values' in form ? form.values : {}) as Record<string, string>);
+	let editing = $state<string | undefined>(undefined);
 </script>
 
 <svelte:head><title>relais — credentials</title></svelte:head>
@@ -106,6 +108,13 @@
 	</form>
 {/if}
 
+{#if data.truncated}
+	<p class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+		The API reported more rows than are shown here: this list is not all rows. Paging is not
+		implemented for this screen — see docs/FRONTEND.md.
+	</p>
+{/if}
+
 <div class="mt-6">
 	{#if data.credentials.length === 0}
 		<EmptyState title="No credentials" hint="Create one for each application that sends mail." />
@@ -147,11 +156,105 @@
 						</Badge>
 					</td>
 					<td class="px-4 py-2.5 text-right">
-						{#if data.canWrite && credential.state === 'active'}
-							<form method="POST" action="?/revoke" class="flex justify-end">
-								<input type="hidden" name="id" value={credential.id} />
-								<ConfirmButton label="Revoke" confirm={credential.name} />
-							</form>
+						{#if data.canWrite && credential.state !== 'revoked'}
+							<div class="flex flex-wrap justify-end gap-2">
+								<button
+									type="button"
+									onclick={() => (editing = credential.id)}
+									class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+								>
+									Edit
+								</button>
+								<form method="POST" action="?/revoke">
+									<input type="hidden" name="id" value={credential.id} />
+									<!-- Revocation is irreversible and deliberately not a delete: the
+									     messages this credential sent keep pointing at it, which is what
+									     makes an audit possible. -->
+									<ConfirmButton label="Revoke" confirm={credential.name} />
+								</form>
+							</div>
+
+							<Dialog
+								open={editing === credential.id}
+								title="Edit {credential.name}"
+								onclose={() => (editing = undefined)}
+							>
+								<form
+									method="POST"
+									action="?/update"
+									id="edit-{credential.id}"
+									class="grid gap-3 text-left"
+								>
+									<input type="hidden" name="id" value={credential.id} />
+
+									<label class="block text-sm">
+										<span class="font-medium">Name</span>
+										<input
+											name="name"
+											value={credential.name}
+											required
+											class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+										/>
+									</label>
+
+									<div class="grid grid-cols-2 gap-3">
+										<label class="block text-sm">
+											<span class="font-medium">Rate limit (per second)</span>
+											<input
+												name="rate_limit_rps"
+												type="number"
+												step="0.1"
+												min="0.1"
+												value={credential.rate_limit_rps ?? ''}
+												placeholder="deployment default"
+												class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+											/>
+										</label>
+										<label class="block text-sm">
+											<span class="font-medium">Burst</span>
+											<input
+												name="rate_limit_burst"
+												type="number"
+												min="1"
+												value={credential.rate_limit_burst ?? ''}
+												placeholder="deployment default"
+												class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+											/>
+										</label>
+									</div>
+									<p class="text-xs text-slate-500">
+										Leave both empty to use the deployment default. The limit is per process, which
+										is documented and deliberate for a single-instance deployment.
+									</p>
+
+									<label class="flex items-center gap-2 text-sm">
+										<input type="checkbox" name="enabled" checked={credential.state === 'active'} />
+										<span>
+											Enabled
+											<span class="block text-xs text-slate-500">
+												Disabling is reversible; revoking is not.
+											</span>
+										</span>
+									</label>
+								</form>
+
+								{#snippet footer()}
+									<button
+										type="button"
+										onclick={() => (editing = undefined)}
+										class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+									>
+										Cancel
+									</button>
+									<button
+										type="submit"
+										form="edit-{credential.id}"
+										class="rounded-md bg-brand-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
+									>
+										Save
+									</button>
+								{/snippet}
+							</Dialog>
 						{/if}
 					</td>
 				</tr>

@@ -788,3 +788,108 @@ func TestEveryOperationRefusesNoToken(t *testing.T) {
 		}
 	}
 }
+
+// TestErrorResponsesMatchTheDocumentedSchema is the guard the error envelope earned.
+//
+// Every other test in this file compares names and shapes derived from the same Go
+// types, so all of them agreed with each other while the document described an error
+// shape the server never sent: `writeError` wraps its body as {"error": {...}} and
+// the table named the inner type. The generated TypeScript then read `code` off the
+// envelope, found nothing, and every API error reached the operator as a bare status
+// code. Nothing failed — the drift was between the document and the wire, and no
+// test looked there.
+//
+// This one sends real requests, takes the bodies the server actually produces, and
+// checks them against the documented schema.
+func TestErrorResponsesMatchTheDocumentedSchema(t *testing.T) {
+	fixture := newAdminFixture(t)
+	token := fixture.adminToken()
+	const absent = "00000000-0000-4000-8000-000000000000"
+
+	// One response per status the document claims to describe.
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		token  string
+		body   string
+		want   int
+	}{
+		{"401 without a token", "GET", "/admin/v1/backends", "", "", 401},
+		{"403 for a viewer", "POST", "/admin/v1/backends", fixture.viewerToken(),
+			`{"name":"x","host":"h","port":25,"tls_mode":"none"}`, 403},
+		{"404 for a missing row", "GET", "/admin/v1/credentials/" + absent, token, "", 404},
+		{"422 for an invalid payload", "POST", "/admin/v1/backends", token,
+			`{"name":"x","host":"h","port":70000,"tls_mode":"none"}`, 422},
+		// 400, not 422: malformed JSON is a bad request, while a well-formed body that
+		// is not acceptable is 422. The distinction is worth keeping — a client can
+		// retry neither, but only one of them is a bug in its serialiser.
+		{"400 for an unparseable body", "POST", "/admin/v1/backends", token, `{`, 400},
+		{"404 for an unknown endpoint", "GET", "/admin/v1/nonesuch", token, "", 404},
+	}
+
+	properties := documentedErrorProperties(t)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response := fixture.do(tc.method, tc.path, tc.token, tc.body)
+			if response.Code != tc.want {
+				t.Fatalf("got %d, want %d: %s", response.Code, tc.want, response.Body.String())
+			}
+
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("the error body is not a JSON object: %v\n%s", err, response.Body.String())
+			}
+
+			for key := range body {
+				if _, documented := properties[key]; !documented {
+					t.Errorf("the response carries %q, which the documented Error schema does not have. "+
+						"Body: %s", key, response.Body.String())
+				}
+			}
+			for key := range properties {
+				if _, present := body[key]; !present {
+					t.Errorf("the documented Error schema has %q, which the response does not carry. "+
+						"Body: %s", key, response.Body.String())
+				}
+			}
+
+			// The part that actually broke: a client has to find a code and a message
+			// where the document says they are.
+			var envelope errorEnvelope
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("the body does not decode as the documented envelope: %v", err)
+			}
+			if envelope.Error.Code == "" {
+				t.Errorf("no code in %s", response.Body.String())
+			}
+			if envelope.Error.Message == "" {
+				t.Errorf("no message in %s", response.Body.String())
+			}
+		})
+	}
+}
+
+// documentedErrorProperties returns the top-level property names of the Error schema
+// as published.
+func documentedErrorProperties(t *testing.T) map[string]bool {
+	t.Helper()
+
+	doc := generatedDocument(t, SurfaceAdmin)
+	schemas, _ := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	schema, ok := schemas["Error"].(map[string]any)
+	if !ok {
+		t.Fatal("the document has no Error schema")
+	}
+	props, _ := schema["properties"].(map[string]any)
+	if len(props) == 0 {
+		t.Fatal("the Error schema has no properties")
+	}
+
+	out := map[string]bool{}
+	for name := range props {
+		out[name] = true
+	}
+	return out
+}

@@ -16,7 +16,14 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
 			'/admin/v1/backends',
 			{ requestId: locals.requestId }
 		);
-		return { backends: list.data, canWrite: identity?.can_write === true };
+		return {
+			backends: list.data,
+			// The API returns every row today and sets no cursor. If it ever starts
+			// paginating this endpoint, showing page one silently would hide rows from
+			// an operator making a decision; surfacing the cursor's presence does not.
+			truncated: list.next_cursor !== undefined,
+			canWrite: identity?.can_write === true
+		};
 	} catch (cause) {
 		failWith(cause);
 	}
@@ -81,6 +88,61 @@ export const actions: Actions = {
 			// The password is deliberately not echoed back into the form values.
 			const { password: _password, ...safe } = body as Record<string, unknown>;
 			return formFail(cause, safe);
+		}
+	},
+
+	update: async ({ locals, request }) => {
+		const form = await request.formData();
+		const id = String(form.get('id') ?? '');
+		const password = String(form.get('password') ?? '');
+
+		// Every field is sent, because the API's PATCH starts from the stored row and
+		// this form showed the operator all of them. The one exception is the password:
+		// it is never displayed, so an empty box means "leave it alone" rather than
+		// "clear it" — sending an empty string would wipe the relay's credential every
+		// time someone renamed it.
+		const body = {
+			name: String(form.get('name') ?? '').trim(),
+			host: String(form.get('host') ?? '').trim(),
+			port: Number(form.get('port') ?? 587),
+			tls_mode: String(form.get('tls_mode') ?? 'starttls'),
+			auth_user: String(form.get('auth_user') ?? '').trim(),
+			helo_name: String(form.get('helo_name') ?? '').trim(),
+			max_concurrency: Number(form.get('max_concurrency') ?? 2),
+			enabled: form.get('enabled') === 'on',
+			...(password === '' ? {} : { password })
+		};
+
+		try {
+			await apiFetch<Backend>(
+				requireSession(locals).accessToken,
+				`/admin/v1/backends/${encodeURIComponent(id)}`,
+				{ method: 'PATCH', body, requestId: locals.requestId }
+			);
+			return { updated: true };
+		} catch (cause) {
+			const { password: _password, ...safe } = body as Record<string, unknown>;
+			return formFail(cause, safe);
+		}
+	},
+
+	// Enabling and disabling is its own action rather than a trip through the edit
+	// form. A domain pointing at a disabled relay delivers nothing, so this is the
+	// switch an operator reaches for during an incident, and it should be one click.
+	toggle: async ({ locals, request }) => {
+		const form = await request.formData();
+		const id = String(form.get('id') ?? '');
+		const enabled = form.get('enabled') === 'true';
+
+		try {
+			await apiFetch<Backend>(
+				requireSession(locals).accessToken,
+				`/admin/v1/backends/${encodeURIComponent(id)}`,
+				{ method: 'PATCH', body: { enabled }, requestId: locals.requestId }
+			);
+			return { updated: true };
+		} catch (cause) {
+			return formFail(cause, {});
 		}
 	},
 

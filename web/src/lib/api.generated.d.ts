@@ -462,6 +462,9 @@ export interface components {
             name?: string;
         };
         Error: {
+            error: components["schemas"]["ErrorDetail"];
+        };
+        ErrorDetail: {
             code: string;
             field?: string;
             message: string;
@@ -636,6 +639,15 @@ export interface operations {
                     "application/json": components["schemas"]["Backend"];
                 };
             };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description No credential, or one that is not valid. */
             401: {
                 headers: {
@@ -752,6 +764,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Backend"];
+                };
+            };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description No credential, or one that is not valid. */
@@ -910,6 +931,15 @@ export interface operations {
                     "application/json": components["schemas"]["CreatedCredential"];
                 };
             };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description No credential, or one that is not valid. */
             401: {
                 headers: {
@@ -1019,6 +1049,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Credential"];
+                };
+            };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description No credential, or one that is not valid. */
@@ -1132,6 +1171,15 @@ export interface operations {
                     "application/json": components["schemas"]["PatternList"];
                 };
             };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description No credential, or one that is not valid. */
             401: {
                 headers: {
@@ -1240,6 +1288,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PatternTest"];
+                };
+            };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description No credential, or one that is not valid. */
@@ -1389,6 +1446,15 @@ export interface operations {
                     "application/json": components["schemas"]["Domain"];
                 };
             };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description No credential, or one that is not valid. */
             401: {
                 headers: {
@@ -1505,6 +1571,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Domain"];
+                };
+            };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description No credential, or one that is not valid. */
@@ -1765,6 +1840,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PatternValidation"];
+                };
+            };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description No credential, or one that is not valid. */

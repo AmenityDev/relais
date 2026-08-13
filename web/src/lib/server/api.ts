@@ -23,6 +23,7 @@ export type PatternValidation = Schemas['PatternValidation'];
 export type PatternTest = Schemas['PatternTest'];
 export type ResolveResult = Schemas['ResolveResult'];
 export type ApiError = Schemas['Error'];
+export type ApiErrorDetail = Schemas['ErrorDetail'];
 
 /** Every path the admin API serves, from the generated document. */
 export type ApiPath = keyof paths;
@@ -125,10 +126,14 @@ function toApiError(status: number, text: string): ApiCallError {
 	let field: string | undefined;
 
 	try {
+		// The API wraps every error as {"error": {...}}. Reading the fields off the
+		// envelope found nothing, so an operator saw "the admin API returned 422" where
+		// the server had said "backend auth password was given without a user".
 		const parsed = JSON.parse(text) as Partial<ApiError>;
-		if (typeof parsed.code === 'string' && parsed.code !== '') code = parsed.code;
-		if (typeof parsed.message === 'string' && parsed.message !== '') message = parsed.message;
-		if (typeof parsed.field === 'string' && parsed.field !== '') field = parsed.field;
+		const detail = (parsed.error ?? {}) as Partial<ApiErrorDetail>;
+		if (typeof detail.code === 'string' && detail.code !== '') code = detail.code;
+		if (typeof detail.message === 'string' && detail.message !== '') message = detail.message;
+		if (typeof detail.field === 'string' && detail.field !== '') field = detail.field;
 	} catch {
 		// A non-JSON error body is itself information: keep the default message
 		// rather than exposing whatever HTML a proxy returned.

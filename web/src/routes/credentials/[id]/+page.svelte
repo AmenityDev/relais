@@ -33,6 +33,21 @@
 	</p>
 {/if}
 
+{#if data.logsUrl}
+	<p class="mt-4 text-sm">
+		<!-- An external URL, to whatever log store is configured. resolve() is for
+		     internal pathnames; putting one through it would rewrite a foreign origin. -->
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+		<a href={data.logsUrl} rel="noreferrer" class="font-medium text-brand-700 hover:underline">
+			Everything this credential did →
+		</a>
+		<span class="text-xs text-slate-500">
+			Including every rejection, which is where an investigation starts if it is suspected of being
+			compromised.
+		</span>
+	</p>
+{/if}
+
 <h2 class="mt-8 text-sm font-semibold tracking-wide text-slate-500 uppercase">Allowed senders</h2>
 
 <div class="mt-3">

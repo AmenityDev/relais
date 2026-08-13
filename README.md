@@ -100,7 +100,7 @@ a relais message.
 ## Admin API
 
 `/admin/v1/*` on a **separate listener** (`:8081` by default). Authentication is
-an Authentik-issued JWT, validated against the issuer's JWKS; authorisation is
+a JWT from the configured OIDC issuer, validated against its JWKS; authorisation is
 group membership, mapped to `admin` (read/write) or `viewer` (read-only).
 
 Keeping it on its own port means exposing the public API cannot expose the admin
@@ -123,7 +123,7 @@ TypeScript copy would drift, and the day it drifts the UI misreports what a
 credential may send as.
 
 Note that **OIDC discovery is lazy**: it happens on the first admin request, not
-at startup. An Authentik outage therefore never stops relais from relaying mail —
+at startup. A provider outage therefore never stops relais from relaying mail —
 it makes the admin API unavailable, with a `503` rather than a `401`.
 
 ## Quick start

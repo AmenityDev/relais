@@ -30,6 +30,10 @@ services:
       # from the local network.
       - "127.0.0.1:5432:5432"
     volumes:
+      # Creates the separate relais_test database on first initialisation. See the
+      # script: the suite truncates, and truncating the development data is not a
+      # thing to discover by losing it.
+      - ./deploy/postgres:/docker-entrypoint-initdb.d:ro
       # Postgres 18 images expect a single mount at /var/lib/postgresql and put
       # the cluster in a version-specific subdirectory, which is what makes
       # `pg_upgrade --link` possible later. Mounting .../data instead (the

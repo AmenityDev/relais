@@ -48,8 +48,28 @@ tasks:
           sed -i "s|^RELAIS_SECRET_CREDENTIAL_PEPPER=.*|RELAIS_SECRET_CREDENTIAL_PEPPER=$pepper|" .env
           echo "generated RELAIS_SECRET_CREDENTIAL_PEPPER"
         fi
+        # The interface needs its own key, and refuses to start without one. Leaving
+        # it out of setup meant a fresh checkout could bring up relais and then hit a
+        # wall at the admin interface, which is a poor place to discover a missing
+        # step.
+        if grep -qE '^RELAIS_WEB_SESSION_KEY=.+' .env; then
+          echo "RELAIS_WEB_SESSION_KEY is already set, leaving it alone"
+        else
+          web=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))" 2>/dev/null) || {
+            echo "RELAIS_WEB_SESSION_KEY: node is not installed, skipping."
+            echo "  Generate one later with: task web:key"
+            web=""
+          }
+          if [ -n "$web" ]; then
+            sed -i "s|^RELAIS_WEB_SESSION_KEY=.*|RELAIS_WEB_SESSION_KEY=$web|" .env
+            echo "generated RELAIS_WEB_SESSION_KEY"
+          fi
+        fi
         echo
         echo "Next: docker compose up -d && task migrate"
+        echo "For the admin interface, point it at an OIDC issuer:"
+        echo "  docker compose --profile auth up -d   # a development Keycloak"
+        echo "  then set RELAIS_OIDC_ISSUER and RELAIS_WEB_OIDC_* in .env"
 
   build:
     desc: Build the binary
@@ -67,8 +87,22 @@ tasks:
 
   test:
     desc: Run the test suite (database-backed tests skip if Postgres is down)
+    # No RELAIS_TEST_DB_URL here: without it the database-backed tests skip rather
+    # than touching anything. `task test:all` is the one that requires a database,
+    # and it uses relais_test.
     cmds:
       - go test -race ./...
+
+  test:db:
+    desc: Create and migrate the test database (safe to re-run)
+    cmds:
+      - |
+        set -e
+        docker compose exec -T postgres psql -U relais -d postgres -tAc \
+          "SELECT 1 FROM pg_database WHERE datname='relais_test'" | grep -q 1 \
+          || docker compose exec -T postgres createdb -U relais -O relais relais_test
+        echo "relais_test is present"
+      - RELAIS_DB_URL=postgres://relais:relais@127.0.0.1:5432/relais_test?sslmode=disable go run ./cmd/relais migrate up
 
   test:all:
     desc: Run everything, requiring a database (this is what CI should run)
@@ -76,7 +110,9 @@ tasks:
     # fails instead of skipping, because a silently skipped integration suite
     # looks exactly like a passing one.
     env:
-      RELAIS_TEST_DB_URL: '{{.RELAIS_TEST_DB_URL | default "postgres://relais:relais@127.0.0.1:5432/relais?sslmode=disable"}}'
+      # relais_test, never relais: the suite truncates every table between cases, so
+      # pointing it at the development database wipes whatever was set up there.
+      RELAIS_TEST_DB_URL: '{{.RELAIS_TEST_DB_URL | default "postgres://relais:relais@127.0.0.1:5432/relais_test?sslmode=disable"}}'
     cmds:
       - go test -race -count=1 ./...
 
@@ -126,6 +162,38 @@ tasks:
       - docker compose up -d
       - docker compose ps
 
+  dev:auth:
+    desc: Start the development OIDC provider (Keycloak, realm pre-imported)
+    # Its own target rather than part of dev:up: the usual loop does not need an
+    # identity provider, and Keycloak is the heaviest container here.
+    cmds:
+      - docker compose --profile auth up -d
+      - |
+        printf 'waiting for Keycloak to import its realm'
+        for _ in $(seq 1 60); do
+          if [ "$(docker inspect -f '{{`{{.State.Health.Status}}`}}' relais-dev-keycloak-1 2>/dev/null)" = healthy ]; then
+            echo " ready"
+            echo
+            echo "issuer:  http://localhost:8180/realms/relais"
+            echo "users:   ops/ops (admin), watcher/watcher (read-only)"
+            echo "console: http://localhost:8180 (admin/admin)"
+            exit 0
+          fi
+          printf '.'
+          sleep 2
+        done
+        echo
+        echo "Keycloak did not become healthy. Logs:"
+        docker compose --profile auth logs --tail 30 keycloak
+        exit 1
+
+  dev:stop:
+    desc: Stop every development container, keeping the data
+    # Names both profiles: `docker compose down` alone leaves the profile-gated
+    # containers running, which is how a stale Keycloak ends up holding :8180.
+    cmds:
+      - docker compose --profile auth --profile web --profile app down
+
   dev:down:
     desc: Stop the development infrastructure, keeping the data volume
     cmds:
@@ -135,7 +203,9 @@ tasks:
     desc: Destroy the development database and recreate the schema
     prompt: This deletes the local database. Continue?
     cmds:
-      - docker compose down -v
+      # Every profile, or a Keycloak started earlier survives the reset and keeps a
+      # port. Its realm is re-imported on each start, so it loses nothing.
+      - docker compose --profile auth --profile web --profile app down -v
       - docker compose up -d
       # Wait for the healthcheck rather than sleeping a guessed number of
       # seconds.
@@ -195,6 +265,14 @@ tasks:
     dir: web
     cmds:
       - npm run types
+
+  smoke:
+    desc: Drive the running stack end to end (login, screens, RBAC)
+    # Tests the running servers, not the source. Rebuild first: adapter-node loads
+    # route chunks lazily, so rebuilding under a live process makes it 500 on routes
+    # it had not loaded — a failure that looks like a bug and is not one.
+    cmds:
+      - bash scripts/smoke.sh
 
   web:key:
     desc: Generate a session key for the admin interface

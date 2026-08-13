@@ -2,7 +2,9 @@
 
 The administration interface for relais: SMTP backends, sending domains,
 credentials and their sender patterns, and a message log. Authentication is OIDC
-through Authentik; no password is ever handled locally.
+through OIDC; no password is ever handled locally. Any compliant provider works —
+the endpoints are discovered from the issuer (F13) — and the development stack ships
+a Keycloak with its realm pre-imported.
 
 This document records the decisions. It is updated when a decision changes.
 
@@ -19,7 +21,7 @@ Checked against the npm registry rather than recalled from memory.
 | `svelte` | 5.56.8 | runes |
 | `@sveltejs/kit` | 2.70.2 | |
 | `@sveltejs/adapter-node` | 5.5.7 | |
-| `arctic` | 3.7.0 | first-class `Authentik` provider |
+| `arctic` | 3.7.0 | `OAuth2Client`, driven by discovery (see F13) |
 | `tailwindcss` | 4.3.3 | |
 | `typescript` | **6.0.3** | **not** `latest` — see below |
 | `vite` | 8.2.1 | |
@@ -32,11 +34,13 @@ Pin **6.0.3**: stable and supported. Installing `latest` breaks `svelte-check`.
 The arctic API in use:
 
 ```ts
-new Authentik(baseURL, clientId, clientSecret, redirectURI)
-  .createAuthorizationURL(state, codeVerifier, scopes)   // PKCE
-  .validateAuthorizationCode(code, codeVerifier)         // → OAuth2Tokens
-  .refreshAccessToken(refreshToken)
-  .revokeToken(token)
+// Endpoints come from the issuer's discovery document, so this works against any
+// provider. arctic's per-vendor classes hardcode vendor paths; see F13.
+new OAuth2Client(clientId, clientSecret, redirectURI)
+  .createAuthorizationURLWithPKCE(authorizationEndpoint, state, S256, verifier, scopes)
+  .validateAuthorizationCode(tokenEndpoint, code, verifier) // → OAuth2Tokens
+  .refreshAccessToken(tokenEndpoint, refreshToken, [])
+  .revokeToken(revocationEndpoint, token)
 ```
 
 ---
@@ -75,7 +79,9 @@ SvelteKit enforces — an import from client code fails the build.
 
 ### F3 — session: measured, not estimated
 
-Prerequisites on the Authentik side, without which D11 does not hold:
+Prerequisites on the provider side, without which D11 does not hold. Stated for
+Authentik because that is the production target; the development Keycloak realm
+already satisfies all three:
 
 - the provider must issue a **signed (JWT) access token** — set a *Signing Key*.
   Without one, Authentik issues an opaque token that Go cannot validate against a
@@ -93,6 +99,16 @@ payload        1984 B
 cookie        ~2683 B   (+28 B AES-GCM nonce/tag, then base64 ×1.34)
 ```
 
+Measured again against the development Keycloak, through the real login flow:
+
+```text
+cookie        3075 B   (Set-Cookie in full, name and attributes included)
+headroom      1021 B
+```
+
+Both providers land in the comfortable band, which is the useful part: the budget
+does not depend on which one is in front.
+
 Verdict: **comfortable**. The limit is ~4096 B *including the name and
 attributes* (`Path`, `SameSite`, `Secure`, `HttpOnly` account for ~80 B), leaving
 roughly 1300 B of headroom.
@@ -103,7 +119,7 @@ and `groups`. The `id_token` is discarded after login.
 **Guard rail to implement**: log a warning when the cookie exceeds 3500 B. The
 headroom is not unlimited, and drift must become visible before it breaks.
 
-The measurement recipe, to be repeated if the Authentik configuration changes:
+The measurement recipe, to be repeated if the provider's configuration changes:
 
 ```sh
 # 1) In a browser, capture the ?code= from the redirect
@@ -132,7 +148,8 @@ Thresholds: `< 3000 B` comfortable · `3000–3800 B` fragile · `> 3800 B` a
 server-side opaque session is required.
 
 Refreshing happens in `hooks.server.ts` when `exp` approaches, rewriting the
-cookie. Authentik access tokens are short-lived, so a `Set-Cookie` every few
+cookie. Access tokens are short-lived on both Authentik and Keycloak, so a
+`Set-Cookie` every few
 minutes is normal.
 
 ### F4 — no component library

@@ -8,6 +8,7 @@ import {
 	type PatternTest,
 	type PatternValidation
 } from '$lib/server/api';
+import { credentialLogsUrl } from '$lib/server/logs';
 import { requireSession } from '$lib/server/session';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -22,7 +23,12 @@ export const load: PageServerLoad = async ({ locals, params, parent }) => {
 			apiFetch<Credential>(token, `/admin/v1/credentials/${id}`, { requestId }),
 			apiFetch<{ data: Pattern[] }>(token, `/admin/v1/credentials/${id}/patterns`, { requestId })
 		]);
-		return { credential, patterns: patterns.data, canWrite: identity?.can_write === true };
+		return {
+			credential,
+			patterns: patterns.data,
+			canWrite: identity?.can_write === true,
+			logsUrl: credentialLogsUrl(credential.id)
+		};
 	} catch (cause) {
 		failWith(cause);
 	}

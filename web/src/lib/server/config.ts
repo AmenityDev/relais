@@ -34,6 +34,17 @@ export interface Config {
 
 	/** How long before expiry to refresh the access token, in seconds. */
 	refreshSkewSeconds: number;
+
+	/**
+	 * A URL template for searching the log store, with `{query}` where the search
+	 * terms go. Empty disables every log link rather than rendering a dead one.
+	 *
+	 * A template rather than a hostname, because the query syntax belongs to whatever
+	 * is deployed — HyperDX, ClickStack, Grafana — and guessing it here would produce
+	 * links that open the right tool on the wrong search. Example:
+	 *   https://hyperdx.example.com/search?q={query}
+	 */
+	logsUrlTemplate: string;
 }
 
 let cached: Config | undefined;
@@ -104,6 +115,15 @@ export function config(): Config {
 
 	const refreshSkewSeconds = positiveInt(env.RELAIS_WEB_REFRESH_SKEW_SECONDS, 60);
 
+	const logsUrlTemplate = (env.RELAIS_WEB_LOGS_URL ?? '').trim();
+	if (logsUrlTemplate !== '' && !logsUrlTemplate.includes('{query}')) {
+		problems.push(
+			'RELAIS_WEB_LOGS_URL must contain {query}, e.g. ' +
+				'https://hyperdx.example.com/search?q={query} — without it every log link ' +
+				'would open the same unfiltered search'
+		);
+	}
+
 	if (problems.length > 0) {
 		throw new Error(
 			`relais-web is misconfigured:\n  - ${problems.join('\n  - ')}\n\n` +
@@ -118,7 +138,8 @@ export function config(): Config {
 		oidc: { issuer, clientId, clientSecret, scopes },
 		sessionKey,
 		secureCookie,
-		refreshSkewSeconds
+		refreshSkewSeconds,
+		logsUrlTemplate
 	};
 	return cached;
 }

@@ -4,15 +4,22 @@
 	// the correct ARIA role — the four things that are hard to get right by hand and
 	// are the usual argument for adopting one.
 	let {
-		open = $bindable(false),
+		open = false,
 		title,
 		children,
-		footer
+		footer,
+		onclose
 	}: {
 		open?: boolean;
 		title: string;
 		children: import('svelte').Snippet;
 		footer?: import('svelte').Snippet;
+		/**
+		 * Called whenever the dialog closes, including via Escape or the backdrop.
+		 * Without it a caller driving `open` from its own state would never learn the
+		 * dialog was dismissed, and the row could not be reopened.
+		 */
+		onclose?: () => void;
 	} = $props();
 
 	let element: HTMLDialogElement | undefined = $state();
@@ -26,7 +33,7 @@
 
 <dialog
 	bind:this={element}
-	onclose={() => (open = false)}
+	onclose={() => onclose?.()}
 	class="w-full max-w-lg rounded-lg border border-slate-200 bg-white p-0 shadow-xl backdrop:bg-slate-900/40"
 	aria-labelledby="dialog-title"
 >

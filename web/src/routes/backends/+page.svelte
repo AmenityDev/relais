@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Badge from '$lib/components/Badge.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
+	import Dialog from '$lib/components/Dialog.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import Field from '$lib/components/Field.svelte';
 	import Table from '$lib/components/Table.svelte';
@@ -9,6 +10,9 @@
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
 	let showCreate = $state(false);
+	// One dialog per row, keyed by id. The rows are already loaded, so opening an
+	// edit form fetches nothing: it is the list data in inputs (F10).
+	let editing = $state<string | undefined>(undefined);
 
 	const values = $derived((form && 'values' in form ? form.values : {}) as Record<string, string>);
 	const probe = $derived(form && 'probe' in form ? form.probe : undefined);
@@ -179,6 +183,13 @@
 	</form>
 {/if}
 
+{#if data.truncated}
+	<p class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+		The API reported more rows than are shown here: this list is not all rows. Paging is not
+		implemented for this screen — see docs/FRONTEND.md.
+	</p>
+{/if}
+
 <div class="mt-6">
 	{#if data.backends.length === 0}
 		<EmptyState
@@ -219,11 +230,166 @@
 					</td>
 					<td class="px-4 py-2.5 text-right">
 						{#if data.canWrite}
-							<form method="POST" class="flex justify-end gap-2">
-								<input type="hidden" name="id" value={backend.id} />
-								<ConfirmButton label="Test" formaction="?/probe" tone="neutral" />
-								<ConfirmButton label="Remove" formaction="?/remove" confirm={backend.name} />
-							</form>
+							<div class="flex flex-wrap justify-end gap-2">
+								<form method="POST" action="?/toggle">
+									<input type="hidden" name="id" value={backend.id} />
+									<input type="hidden" name="enabled" value={backend.enabled ? 'false' : 'true'} />
+									<button
+										type="submit"
+										class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+									>
+										{backend.enabled ? 'Disable' : 'Enable'}
+									</button>
+								</form>
+								<button
+									type="button"
+									onclick={() => (editing = backend.id)}
+									class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+								>
+									Edit
+								</button>
+								<form method="POST" class="flex gap-2">
+									<input type="hidden" name="id" value={backend.id} />
+									<ConfirmButton label="Test" formaction="?/probe" tone="neutral" />
+									<ConfirmButton label="Remove" formaction="?/remove" confirm={backend.name} />
+								</form>
+							</div>
+
+							<Dialog
+								open={editing === backend.id}
+								title="Edit {backend.name}"
+								onclose={() => (editing = undefined)}
+							>
+								<form
+									method="POST"
+									action="?/update"
+									id="edit-{backend.id}"
+									class="grid gap-3 text-left"
+								>
+									<input type="hidden" name="id" value={backend.id} />
+
+									<label class="block text-sm">
+										<span class="font-medium">Name</span>
+										<input
+											name="name"
+											value={backend.name}
+											required
+											class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+										/>
+									</label>
+
+									<div class="grid grid-cols-3 gap-3">
+										<label class="col-span-2 block text-sm">
+											<span class="font-medium">Host</span>
+											<input
+												name="host"
+												value={backend.host}
+												required
+												class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+											/>
+										</label>
+										<label class="block text-sm">
+											<span class="font-medium">Port</span>
+											<input
+												name="port"
+												type="number"
+												min="1"
+												max="65535"
+												value={backend.port}
+												required
+												class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+											/>
+										</label>
+									</div>
+
+									<label class="block text-sm">
+										<span class="font-medium">Transport</span>
+										<select
+											name="tls_mode"
+											class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+										>
+											<option value="starttls" selected={backend.tls_mode === 'starttls'}
+												>starttls</option
+											>
+											<option value="tls" selected={backend.tls_mode === 'tls'}>tls</option>
+											<option value="none" selected={backend.tls_mode === 'none'}>none</option>
+										</select>
+									</label>
+
+									<div class="grid grid-cols-2 gap-3">
+										<label class="block text-sm">
+											<span class="font-medium">Username</span>
+											<input
+												name="auth_user"
+												value={backend.auth_user}
+												autocomplete="off"
+												class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+											/>
+										</label>
+										<label class="block text-sm">
+											<span class="font-medium">HELO name</span>
+											<input
+												name="helo_name"
+												value={backend.helo_name}
+												class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+											/>
+										</label>
+									</div>
+
+									<label class="block text-sm">
+										<span class="font-medium">New password</span>
+										<input
+											name="password"
+											type="password"
+											autocomplete="new-password"
+											placeholder={backend.has_password
+												? 'leave empty to keep the stored one'
+												: 'none stored'}
+											class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+										/>
+										<!-- relais cannot show the stored password, so there is nothing to
+										     prefill. Empty means unchanged, which is what the API does with an
+										     absent field. -->
+										<span class="mt-1 block text-xs text-slate-500">
+											Empty leaves the stored password alone. It is never displayed.
+										</span>
+									</label>
+
+									<div class="grid grid-cols-2 items-end gap-3">
+										<label class="block text-sm">
+											<span class="font-medium">Max concurrency</span>
+											<input
+												name="max_concurrency"
+												type="number"
+												min="1"
+												value={backend.max_concurrency}
+												class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+											/>
+										</label>
+										<label class="flex items-center gap-2 text-sm">
+											<input type="checkbox" name="enabled" checked={backend.enabled} />
+											<span>Enabled</span>
+										</label>
+									</div>
+								</form>
+
+								{#snippet footer()}
+									<button
+										type="button"
+										onclick={() => (editing = undefined)}
+										class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+									>
+										Cancel
+									</button>
+									<button
+										type="submit"
+										form="edit-{backend.id}"
+										class="rounded-md bg-brand-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
+									>
+										Save
+									</button>
+								{/snippet}
+							</Dialog>
 						{/if}
 					</td>
 				</tr>

@@ -102,7 +102,10 @@ jobs:
       # misconfigured service container would produce a green build that tested
       # none of the pipeline, the store, or either façade — which is worse than a
       # red one, because nobody would look.
-      RELAIS_TEST_DB_URL: postgres://relais:relais@127.0.0.1:5432/relais?sslmode=disable
+      # A separate database, as locally: the suite truncates every table, and sharing
+      # one database with the migrated application schema is how a developer loses
+      # their local setup.
+      RELAIS_TEST_DB_URL: postgres://relais:relais@127.0.0.1:5432/relais_test?sslmode=disable
 
     steps:
       - uses: actions/checkout@v7
@@ -127,10 +130,20 @@ jobs:
             fi
           done
 
+      - name: Create the test database
+        run: |
+          PGPASSWORD=relais createdb -h 127.0.0.1 -U relais -O relais relais_test
+          PGPASSWORD=relais psql -h 127.0.0.1 -U relais -d relais_test -c 'SELECT 1' >/dev/null
+
       - name: Apply migrations
         # Migrations are never implicit in serve, so CI runs them as its own step,
         # exactly as a deployment does.
         run: go run ./cmd/relais migrate up
+
+      - name: Apply migrations to the test database
+        run: go run ./cmd/relais migrate up
+        env:
+          RELAIS_DB_URL: postgres://relais:relais@127.0.0.1:5432/relais_test?sslmode=disable
 
       - name: Test with the race detector
         run: go test -race -count=1 ./...

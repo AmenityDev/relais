@@ -18,7 +18,7 @@ export const load: PageServerLoad = async ({ locals, parent, url }) => {
 
 	try {
 		const [domains, backends] = await Promise.all([
-			apiFetch<{ data: Domain[] }>(token, '/admin/v1/domains', { requestId }),
+			apiFetch<{ data: Domain[]; next_cursor?: string }>(token, '/admin/v1/domains', { requestId }),
 			apiFetch<{ data: Backend[] }>(token, '/admin/v1/backends', { requestId })
 		]);
 
@@ -34,6 +34,9 @@ export const load: PageServerLoad = async ({ locals, parent, url }) => {
 
 		return {
 			domains: domains.data,
+			// See the note on the other lists: the API sets no cursor here today, and a
+			// silent page one would hide rows from an operator making a decision.
+			truncated: domains.next_cursor !== undefined,
 			backends: backends.data,
 			sender,
 			resolved,
@@ -63,6 +66,52 @@ export const actions: Actions = {
 		} catch (cause) {
 			if (cause instanceof ApiCallError && [403, 409, 422].includes(cause.status)) {
 				return fail(cause.status, { message: cause.message, field: cause.field, values: body });
+			}
+			failWith(cause);
+		}
+	},
+
+	update: async ({ locals, request }) => {
+		const form = await request.formData();
+		const id = String(form.get('id') ?? '');
+		const body = {
+			name: String(form.get('name') ?? '').trim(),
+			backend_id: String(form.get('backend_id') ?? ''),
+			include_subdomains: form.get('include_subdomains') === 'on',
+			enabled: form.get('enabled') === 'on'
+		};
+
+		try {
+			await apiFetch<Domain>(
+				requireSession(locals).accessToken,
+				`/admin/v1/domains/${encodeURIComponent(id)}`,
+				{ method: 'PATCH', body, requestId: locals.requestId }
+			);
+			return { updated: true };
+		} catch (cause) {
+			if (cause instanceof ApiCallError && [403, 409, 422].includes(cause.status)) {
+				return fail(cause.status, { message: cause.message, field: cause.field, values: body });
+			}
+			failWith(cause);
+		}
+	},
+
+	// Repointing a domain at another relay is the recovery move when one goes bad, so
+	// it is worth a control of its own rather than a trip through the edit form.
+	toggle: async ({ locals, request }) => {
+		const form = await request.formData();
+		const id = String(form.get('id') ?? '');
+		const enabled = form.get('enabled') === 'true';
+		try {
+			await apiFetch<Domain>(
+				requireSession(locals).accessToken,
+				`/admin/v1/domains/${encodeURIComponent(id)}`,
+				{ method: 'PATCH', body: { enabled }, requestId: locals.requestId }
+			);
+			return { updated: true };
+		} catch (cause) {
+			if (cause instanceof ApiCallError && [403, 409].includes(cause.status)) {
+				return fail(cause.status, { message: cause.message, values: {} });
 			}
 			failWith(cause);
 		}

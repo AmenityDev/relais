@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Badge from '$lib/components/Badge.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
+	import Dialog from '$lib/components/Dialog.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import Field from '$lib/components/Field.svelte';
 	import Table from '$lib/components/Table.svelte';
@@ -8,6 +9,7 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 	const values = $derived((form && 'values' in form ? form.values : {}) as Record<string, string>);
+	let editing = $state<string | undefined>(undefined);
 </script>
 
 <svelte:head><title>relais — domains</title></svelte:head>
@@ -127,6 +129,13 @@
 	</form>
 {/if}
 
+{#if data.truncated}
+	<p class="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+		The API reported more rows than are shown here: this list is not all rows. Paging is not
+		implemented for this screen — see docs/FRONTEND.md.
+	</p>
+{/if}
+
 <div class="mt-6">
 	{#if data.domains.length === 0}
 		<EmptyState title="No sending domains" hint="Add the domain your applications send from." />
@@ -159,10 +168,113 @@
 					</td>
 					<td class="px-4 py-2.5 text-right">
 						{#if data.canWrite}
-							<form method="POST" action="?/remove" class="flex justify-end">
-								<input type="hidden" name="id" value={domain.id} />
-								<ConfirmButton label="Remove" confirm={domain.name} />
-							</form>
+							<div class="flex flex-wrap justify-end gap-2">
+								<form method="POST" action="?/toggle">
+									<input type="hidden" name="id" value={domain.id} />
+									<input type="hidden" name="enabled" value={domain.enabled ? 'false' : 'true'} />
+									<button
+										type="submit"
+										class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+									>
+										{domain.enabled ? 'Disable' : 'Enable'}
+									</button>
+								</form>
+								<button
+									type="button"
+									onclick={() => (editing = domain.id)}
+									class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+								>
+									Edit
+								</button>
+								<form method="POST" action="?/remove">
+									<input type="hidden" name="id" value={domain.id} />
+									<ConfirmButton label="Remove" confirm={domain.name} />
+								</form>
+							</div>
+
+							<Dialog
+								open={editing === domain.id}
+								title="Edit {domain.name}"
+								onclose={() => (editing = undefined)}
+							>
+								<form
+									method="POST"
+									action="?/update"
+									id="edit-{domain.id}"
+									class="grid gap-3 text-left"
+								>
+									<input type="hidden" name="id" value={domain.id} />
+
+									<label class="block text-sm">
+										<span class="font-medium">Domain</span>
+										<input
+											name="name"
+											value={domain.name}
+											required
+											class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+										/>
+									</label>
+
+									<label class="block text-sm">
+										<span class="font-medium">Relay</span>
+										<select
+											name="backend_id"
+											required
+											class="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+										>
+											{#each data.backends as candidate (candidate.id)}
+												<option
+													value={candidate.id}
+													selected={candidate.name === domain.backend_name}
+												>
+													{candidate.name}{candidate.enabled ? '' : ' (disabled)'}
+												</option>
+											{/each}
+										</select>
+										<!-- Repointing here is the recovery move when a relay goes bad. -->
+										<span class="mt-1 block text-xs text-slate-500">
+											Mail for this domain is handed to the selected relay.
+										</span>
+									</label>
+
+									<label class="flex items-start gap-2 text-sm">
+										<input
+											type="checkbox"
+											name="include_subdomains"
+											checked={domain.include_subdomains}
+											class="mt-0.5"
+										/>
+										<span>
+											Include subdomains
+											<span class="block text-xs text-slate-500">
+												Covers mail.{domain.name}. Without it, only {domain.name} itself routes.
+											</span>
+										</span>
+									</label>
+
+									<label class="flex items-center gap-2 text-sm">
+										<input type="checkbox" name="enabled" checked={domain.enabled} />
+										<span>Enabled</span>
+									</label>
+								</form>
+
+								{#snippet footer()}
+									<button
+										type="button"
+										onclick={() => (editing = undefined)}
+										class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+									>
+										Cancel
+									</button>
+									<button
+										type="submit"
+										form="edit-{domain.id}"
+										class="rounded-md bg-brand-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
+									>
+										Save
+									</button>
+								{/snippet}
+							</Dialog>
 						{/if}
 					</td>
 				</tr>

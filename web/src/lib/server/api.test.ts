@@ -91,11 +91,16 @@ describe('apiFetch', () => {
 
 	describe('failures', () => {
 		it("carries the API's own code and message", async () => {
+			// The envelope is the shape the server actually sends. This test previously
+			// asserted the bare object, so it passed while the real 422 from relais was
+			// reduced to "the admin API returned 422" in the interface.
 			fetchMock.mockResolvedValue(
 				jsonResponse(422, {
-					code: 'invalid_request',
-					message: 'port must be 1-65535',
-					field: 'port'
+					error: {
+						code: 'invalid_request',
+						message: 'port must be 1-65535',
+						field: 'port'
+					}
 				})
 			);
 
@@ -143,6 +148,19 @@ describe('apiFetch', () => {
 			expect(error.code).toBe('api_unreachable');
 			// The underlying error names an internal address; it must not be repeated.
 			expect(error.message).not.toContain('10.0.0.4');
+		});
+
+		it('falls back cleanly when the envelope is missing', async () => {
+			// A proxy or a future version could answer with something else. The status is
+			// still reported; only the message degrades.
+			fetchMock.mockResolvedValue(jsonResponse(500, { unexpected: true }));
+
+			const error = (await apiFetch('token', '/admin/v1/stats').catch(
+				(cause: unknown) => cause
+			)) as InstanceType<typeof ApiCallError>;
+
+			expect(error.status).toBe(500);
+			expect(error.code).toBe('unknown');
 		});
 
 		it('reports a success body that is not JSON as 502', async () => {

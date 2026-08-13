@@ -34,6 +34,20 @@
 	</div>
 {/if}
 
+{#if data.logsUrl}
+	<!-- Content is not stored past delivery and no endpoint returns it, so the log
+	     store is where the detail lives. This hands over the search rather than
+	     pretending to show lines relais does not keep. -->
+	<p class="mt-4 text-sm">
+		<!-- An external URL, to whatever log store is configured. resolve() is for
+		     internal pathnames; putting one through it would rewrite a foreign origin. -->
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+		<a href={data.logsUrl} rel="noreferrer" class="font-medium text-brand-700 hover:underline">
+			Open this message's log lines →
+		</a>
+	</p>
+{/if}
+
 <dl
 	class="mt-6 grid gap-x-6 gap-y-3 rounded-lg border border-slate-200 bg-white p-4 sm:grid-cols-2"
 >

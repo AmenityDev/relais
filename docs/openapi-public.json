@@ -22,6 +22,18 @@
       "Error": {
         "additionalProperties": false,
         "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "additionalProperties": false,
+        "properties": {
           "code": {
             "type": "string"
           },
@@ -307,6 +319,16 @@
               }
             },
             "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The body is not valid JSON."
           },
           "401": {
             "content": {
