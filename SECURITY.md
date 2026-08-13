@@ -43,9 +43,16 @@ findings that matter most are the ones that break one of these:
 
 ## What is not in scope
 
-- **The development key material.** There is none: this repository intentionally
-  ships no keys, and `.env.example` leaves them empty so relais refuses to start.
-  If you find committed key material, that *is* a finding — please report it.
+- **The development key material.** relais ships none: `.env.example` leaves the
+  secret variables empty and the service refuses to start without them. If you find
+  committed key material *for relais*, that is a finding — please report it.
+- **`deploy/keycloak/relais-realm.json`.** It does carry a fixed client secret and
+  two throwaway passwords, and that is deliberate. It configures a development-only
+  Keycloak running in `start-dev` mode, published on loopback, whose database is
+  in-memory and whose realm is re-imported on every start. Those values unlock that
+  container and nothing else. They are fixtures, not keys — a local login must be
+  possible without a bypass in the application, because a development-only login
+  path is exactly the kind of thing that survives into production.
 - **`RELAIS_TLS_SELF_SIGNED`.** It generates an untrusted certificate on purpose,
   for tests and local development, and is refused outright when `RELAIS_ENV=prod`
   unless explicitly overridden.

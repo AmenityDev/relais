@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -194,12 +195,25 @@ Schema migrations are not applied here; run "relais migrate up" first.
 			ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 		}
 
+		// Bind before announcing, and before the group starts. ListenAndServe binds
+		// inside the goroutine, which had two consequences worth avoiding: the
+		// "listener started" line was logged whether or not the port was free, and a
+		// bind failure raced the sibling shutdown goroutine — Shutdown turned the real
+		// error into http.ErrServerClosed, which is filtered, so the cause vanished and
+		// the process exited reporting only a cancelled context. "relais: interrupted"
+		// is a poor way to say "port 8080 is already in use".
+		listener, err := net.Listen("tcp", cfg.HTTP.Addr)
+		if err != nil {
+			return fmt.Errorf("http listener on %s: %w", cfg.HTTP.Addr, err)
+		}
+
+		log.Info("http listener started",
+			slog.String("addr", cfg.HTTP.Addr),
+			slog.String("trusted_proxy_header", cfg.HTTP.TrustedProxyHeader),
+		)
+
 		group.Go(func() error {
-			log.Info("http listener started",
-				slog.String("addr", cfg.HTTP.Addr),
-				slog.String("trusted_proxy_header", cfg.HTTP.TrustedProxyHeader),
-			)
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				return fmt.Errorf("http server: %w", err)
 			}
 			return nil
@@ -287,14 +301,21 @@ Schema migrations are not applied here; run "relais migrate up" first.
 			ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 		}
 
+		// Bound before announcing, for the reason given at the HTTP listener.
+		listener, err := net.Listen("tcp", cfg.Admin.Addr)
+		if err != nil {
+			return fmt.Errorf("admin listener on %s: %w", cfg.Admin.Addr, err)
+		}
+
+		log.Info("admin listener started",
+			slog.String("addr", cfg.Admin.Addr),
+			slog.String("issuer", cfg.OIDC.Issuer),
+			slog.String("admin_group", cfg.OIDC.AdminGroup),
+			slog.String("viewer_group", cfg.OIDC.ViewerGroup),
+		)
+
 		group.Go(func() error {
-			log.Info("admin listener started",
-				slog.String("addr", cfg.Admin.Addr),
-				slog.String("issuer", cfg.OIDC.Issuer),
-				slog.String("admin_group", cfg.OIDC.AdminGroup),
-				slog.String("viewer_group", cfg.OIDC.ViewerGroup),
-			)
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				return fmt.Errorf("admin server: %w", err)
 			}
 			return nil

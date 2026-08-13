@@ -92,14 +92,61 @@ services:
     # Migrations are a deliberate step, never implicit in serve.
     command: ["serve"]
 
-  # The admin interface. Its own profile, because the usual development loop runs
-  # relais from the host and does not need it.
+  # An OIDC provider for development, so the admin interface can be exercised
+  # without a production identity provider and without a local login bypass — a
+  # development-only login is exactly the kind of thing that survives into
+  # production.
   #
-  #   docker compose --profile web up
+  # start-dev, never a production mode: no TLS, an in-memory H2 database, and a
+  # realm imported from a fixture on every start. The realm carries a fixed client
+  # secret and two throwaway passwords (ops/ops, watcher/watcher). Those are
+  # fixtures for a loopback-only container, not key material: they unlock this
+  # container and nothing else, and relais itself still ships no keys.
+  keycloak:
+    profiles: ["web", "auth"]
+    image: quay.io/keycloak/keycloak:26.7
+    command: ["start-dev", "--import-realm", "--http-port=8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # The issuer must be identical in the browser and inside the network, or the
+      # `iss` claim will not match what either side validates against. Fixing the
+      # hostname is what makes one value work from both.
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "false"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./deploy/keycloak/relais-realm.json:/opt/keycloak/data/import/relais-realm.json:ro
+    ports:
+      - "127.0.0.1:8180:8180"
+    healthcheck:
+      # No shell and no curl in the image; Keycloak exposes its probes on the
+      # management port, and its own JVM can be asked to check them.
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"UP\"' <&3"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # The admin interface, containerised as it is deployed.
   #
-  # It needs a real Authentik to be useful: OIDC is the only way in, by design, and
-  # there is no local bypass. That is deliberate — a development-only login is
-  # exactly the kind of thing that survives into production.
+  # For the local loop, prefer running it from the host:
+  #
+  #   docker compose --profile auth up -d      # Keycloak only
+  #   task web:dev                             # SvelteKit on the host
+  #
+  # The reason is not convenience. An OIDC issuer URL has to resolve to the same
+  # provider from the browser *and* from the server that exchanges the code, because
+  # both sides deal in the same `iss` value. On a development machine the only name
+  # that satisfies both is localhost, which a container cannot reach. Running the
+  # server on the host makes localhost mean one thing everywhere.
+  #
+  # In a real deployment the provider has a real hostname and this stops mattering,
+  # which is why the container itself is unchanged.
   relais-web:
     profiles: ["web"]
     build:
@@ -107,19 +154,27 @@ services:
       dockerfile: deploy/Dockerfile.web
       args:
         VERSION: dev
+    depends_on:
+      keycloak:
+        condition: service_healthy
     environment:
       # The admin listener, on the compose network. Never published.
       RELAIS_WEB_API_URL: http://relais:8081
       RELAIS_WEB_ORIGIN: http://localhost:3000
-      # The Authentik ROOT, not the issuer: the endpoint paths are appended to it.
-      # The issuer, with /application/o/<slug>/, is what relais itself validates
-      # tokens against.
-      RELAIS_WEB_OIDC_BASE_URL: ${RELAIS_WEB_OIDC_BASE_URL:?missing - the Authentik root, e.g. https://auth.example.com}
-      RELAIS_WEB_OIDC_CLIENT_ID: ${RELAIS_WEB_OIDC_CLIENT_ID:?missing - the Authentik provider client id}
-      RELAIS_WEB_OIDC_CLIENT_SECRET: ${RELAIS_WEB_OIDC_CLIENT_SECRET:?missing - the Authentik provider client secret}
-      # No default, for the same reason the Go side has none: a committed key is a
-      # key every reader of this repository can forge a session with.
-      RELAIS_WEB_SESSION_KEY: ${RELAIS_WEB_SESSION_KEY:?missing - run "task web:key" and put the value in .env}
+      # Passed through empty rather than with Compose's ${VAR:?} form. Compose
+      # interpolates the whole file before it selects a profile, so a required
+      # variable here would break `docker compose ps` and `up postgres` for someone
+      # who never asked for this service. The container validates its own
+      # configuration at startup and names every missing variable, which is a better
+      # error anyway — and no key is defaulted, so nothing starts with a known one.
+      # Defaults point at the development Keycloak above. Override any of them in
+      # .env to use a real provider instead.
+      RELAIS_WEB_OIDC_ISSUER: ${RELAIS_WEB_OIDC_ISSUER-http://localhost:8180/realms/relais}
+      RELAIS_WEB_OIDC_CLIENT_ID: ${RELAIS_WEB_OIDC_CLIENT_ID-relais-web}
+      RELAIS_WEB_OIDC_CLIENT_SECRET: ${RELAIS_WEB_OIDC_CLIENT_SECRET-dev-only-not-a-production-secret}
+      # No default: a committed session key is a key every reader of this repository
+      # could forge a session with. `task web:key` generates one.
+      RELAIS_WEB_SESSION_KEY: ${RELAIS_WEB_SESSION_KEY-}
       # Plain HTTP on loopback only. config() refuses this for any other origin.
       RELAIS_WEB_INSECURE_COOKIE: "true"
     ports:

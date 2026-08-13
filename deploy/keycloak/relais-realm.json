@@ -1,0 +1,118 @@
+{
+  "realm": "relais",
+  "enabled": true,
+  "displayName": "relais (development)",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "groups": [
+    {
+      "name": "relais-admin",
+      "path": "/relais-admin"
+    },
+    {
+      "name": "relais-viewer",
+      "path": "/relais-viewer"
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "relais-web",
+      "name": "relais admin interface",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "dev-only-not-a-production-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:3000"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*"
+      },
+      "description": "Development client for the relais admin interface. directAccessGrantsEnabled is on so a script can mint a token and check its claims without driving a browser; the application itself only ever performs the authorization code flow with PKCE.",
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "relais-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "relais",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "ops",
+      "email": "ops@example.test",
+      "firstName": "Ops",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "ops",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/relais-admin"
+      ],
+      "realmRoles": [
+        "offline_access",
+        "default-roles-relais"
+      ]
+    },
+    {
+      "username": "watcher",
+      "email": "watcher@example.test",
+      "firstName": "Read",
+      "lastName": "Only",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "watcher",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/relais-viewer"
+      ],
+      "realmRoles": [
+        "offline_access",
+        "default-roles-relais"
+      ]
+    }
+  ]
+}

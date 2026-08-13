@@ -57,8 +57,9 @@ new Authentik(baseURL, clientId, clientSecret, redirectURI)
 | F10 | No client-side data fetching: `load` and form actions only | accepted |
 | F11 | A separate HTTP listener for the admin API (Go side) | accepted, implemented |
 | F12 | The API description is generated from Go, never written | accepted, implemented |
-| F13 | The Authentik root and the issuer are distinct variables | accepted, implemented |
+| F13 | OIDC discovery: one issuer, any provider | accepted, implemented |
 | F14 | The container refuses to start when misconfigured | accepted, implemented |
+| F15 | adapter-node's ORIGIN is derived, never configured twice | accepted, implemented |
 
 ### F2 — the browser never holds a token
 
@@ -249,22 +250,29 @@ web/
   4096 bytes, because what a browser does with an oversized cookie is discard it
   silently: the operator sees a login loop and the logs say nothing.
 
-### F13 — the Authentik root is not the issuer
+### F13 — OIDC discovery, one issuer, any provider
 
-Two values that look alike and are not interchangeable:
+`relais-web` uses arctic's generic `OAuth2Client` with endpoints read from the
+issuer's `/.well-known/openid-configuration`, not arctic's per-vendor `Authentik`
+class.
 
-| Variable | Value | Who needs it |
-| --- | --- | --- |
-| `RELAIS_WEB_OIDC_BASE_URL` | `https://auth.example.com` | relais-web, to build the endpoint URLs |
-| `RELAIS_ADMIN_OIDC_ISSUER` | `https://auth.example.com/application/o/<slug>/` | relais, to validate tokens against the JWKS |
+The vendor class hardcodes `/application/o/authorize/`, which had two costs. The
+application only worked with Authentik. And the configuration had to carry the
+provider's *root* URL separately from its *issuer* — two values that look alike,
+cannot be swapped, and when confused produce
+`…/application/o/<slug>/application/o/authorize/`: a 404 from the provider that
+mentions neither variable. That was found by running the container and reading the
+redirect it emitted, not by reasoning about it.
 
-arctic appends `/application/o/authorize/` to the base URL, so passing the issuer
-produces `…/application/o/<slug>/application/o/authorize/` and a 404 from Authentik
-that mentions neither variable. Configuration refuses a base URL containing
-`/application/o/` and names the other variable in the message.
+Discovery removes both. `RELAIS_WEB_OIDC_ISSUER` is the only value, and it is the
+same one the Go side validates the `iss` claim against (`RELAIS_OIDC_ISSUER`).
+Discovery is fetched once and kept, so a provider outage does not sit in the path
+of every sign-in, and a failure is remembered briefly rather than retried per
+request.
 
-Found by running the container and reading the redirect it produced, not by
-reasoning about it.
+The document's own `issuer` is compared against the configured one and a mismatch
+is refused, because a mismatch yields tokens relais rejects — a failure that would
+otherwise surface a layer away from its cause.
 
 ### F14 — the container refuses to start when misconfigured
 
@@ -313,3 +321,46 @@ Kept honest by 15 tests, each verified by mutation:
 
 The last is `relais openapi -check`, run in CI beside `sqlc diff` for the same
 reason.
+
+### F15 — ORIGIN is derived from the origin we already have
+
+`adapter-node` reads `ORIGIN` from the environment before any application code
+runs, and uses it for the CSRF origin check on every form POST. Without it, every
+write is refused with *"Cross-site POST form submissions are forbidden"* while GET
+navigation — and therefore login — keeps working. A deployment looks healthy and
+cannot save anything.
+
+The image therefore derives `ORIGIN` from `RELAIS_WEB_ORIGIN` in its entrypoint
+rather than asking for it twice. Two variables that must agree are one variable,
+and a mismatch here produces that same silent refusal.
+
+Found while testing writes through the interface. It also invalidated an earlier
+check of mine: a viewer's write returned 403, which I read as the role check when it
+was the CSRF check. Both were re-verified once `ORIGIN` was set — the refusal now
+carries "read-only access", and an editor's write reaches the database.
+
+## Running the whole stack locally
+
+```sh
+task setup                              # generates the keys this repo ships none of
+docker compose up -d                    # Postgres + mailpit
+docker compose --profile auth up -d     # Keycloak, realm imported, no clicking
+task migrate
+task web:key                            # put the value in .env as RELAIS_WEB_SESSION_KEY
+relais serve                            # or: task serve
+task web:dev                            # the interface, on the host
+```
+
+Sign in at <http://localhost:3000> as `ops` / `ops` (admin) or `watcher` /
+`watcher` (read-only). Mail lands in mailpit at <http://localhost:8025>.
+
+The interface runs on the host rather than in a container for one reason: an OIDC
+issuer URL has to resolve to the same provider from the browser *and* from the
+server that exchanges the code, since both deal in the same `iss` value. On a
+development machine the only name that satisfies both is `localhost`, which a
+container cannot reach. In a real deployment the provider has a real hostname and
+this stops mattering, which is why the image itself is unchanged.
+
+The development realm carries a fixed client secret and two throwaway passwords.
+Those are fixtures for a loopback-only container in `start-dev` mode: they unlock
+that container and nothing else, and relais itself still ships no keys.

@@ -1,12 +1,27 @@
-import { Authentik, generateCodeVerifier, generateState, OAuth2RequestError } from 'arctic';
+import {
+	CodeChallengeMethod,
+	OAuth2Client,
+	generateCodeVerifier,
+	generateState,
+	OAuth2RequestError
+} from 'arctic';
 import type { Cookies } from '@sveltejs/kit';
 import { config, redirectUri } from './config';
 import type { Session } from './session';
 
-// OIDC through Authentik, using arctic rather than hand-rolled OAuth. The brief
-// ruled out home-made authentication, and this is the part where a subtle mistake
-// (a missing state check, a skipped PKCE verifier) is both easy to make and
-// invisible until exploited.
+// OIDC against any compliant provider, using arctic's OAuth2Client with endpoints
+// taken from the issuer's discovery document.
+//
+// arctic ships a provider class per vendor, and the Authentik one hardcodes
+// /application/o/authorize/. Using it meant this application only worked with
+// Authentik, and that the configuration had to carry the provider's root URL
+// *separately* from its issuer — two values that look alike, cannot be swapped, and
+// produce a 404 mentioning neither when confused. Discovery removes both problems:
+// the issuer is the single value, and the endpoints come from the provider itself.
+//
+// arctic is still what performs the exchange, because the brief ruled out
+// home-made authentication and this is where a subtle mistake — a missing state
+// check, a skipped PKCE verifier — is easy to make and invisible until exploited.
 
 const STATE_COOKIE = 'relais_oidc_state';
 const VERIFIER_COOKIE = 'relais_oidc_verifier';
@@ -15,10 +30,95 @@ const RETURN_COOKIE = 'relais_oidc_return';
 /** Short: this cookie exists only for the round trip to the provider. */
 const HANDSHAKE_MAX_AGE = 10 * 60;
 
-function provider(): Authentik {
+/** The endpoints this application needs from a discovery document. */
+export interface Endpoints {
+	issuer: string;
+	authorization: string;
+	token: string;
+	revocation: string | undefined;
+}
+
+// Discovery is fetched once and kept. The document changes when a provider is
+// reconfigured, which is a restart-shaped event, and re-fetching it per login would
+// put the provider's availability in the path of every sign-in.
+let cachedEndpoints: Endpoints | undefined;
+let lastFailure: { at: number; message: string } | undefined;
+
+/** How long a discovery failure is remembered, so a down provider is not hammered. */
+const DISCOVERY_RETRY_MS = 15_000;
+
+export async function discover(): Promise<Endpoints> {
+	if (cachedEndpoints) return cachedEndpoints;
+
+	if (lastFailure !== undefined && Date.now() - lastFailure.at < DISCOVERY_RETRY_MS) {
+		throw new LoginError(`the identity provider is unavailable: ${lastFailure.message}`);
+	}
+
 	const { oidc } = config();
-	// oidc.baseUrl is the Authentik root; arctic appends the endpoint paths itself.
-	return new Authentik(oidc.baseUrl, oidc.clientId, oidc.clientSecret, redirectUri());
+	const url = `${oidc.issuer}/.well-known/openid-configuration`;
+
+	let document: Record<string, unknown>;
+	try {
+		const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+		if (!response.ok) {
+			throw new Error(`${url} returned ${response.status}`);
+		}
+		document = (await response.json()) as Record<string, unknown>;
+	} catch (cause) {
+		const message = cause instanceof Error ? cause.message : String(cause);
+		lastFailure = { at: Date.now(), message };
+		throw new LoginError(`OIDC discovery failed: ${message}`);
+	}
+
+	const endpoints = readEndpoints(document, oidc.issuer);
+	lastFailure = undefined;
+	cachedEndpoints = endpoints;
+	return endpoints;
+}
+
+function readEndpoints(document: Record<string, unknown>, configuredIssuer: string): Endpoints {
+	const authorization = document.authorization_endpoint;
+	const token = document.token_endpoint;
+	const issuer = document.issuer;
+	const revocation = document.revocation_endpoint;
+
+	if (typeof authorization !== 'string' || typeof token !== 'string') {
+		throw new LoginError(
+			'the discovery document has no authorization_endpoint or token_endpoint: ' +
+				`is ${configuredIssuer} really an OIDC issuer?`
+		);
+	}
+
+	// The issuer in the document must match the one configured. A mismatch means the
+	// configuration points somewhere that answers for a different issuer, and it is
+	// also what the Go side validates the `iss` claim against — so a mismatch here
+	// would produce tokens relais rejects, with the failure surfacing one layer away
+	// from its cause.
+	if (typeof issuer === 'string' && issuer.replace(/\/+$/, '') !== configuredIssuer) {
+		throw new LoginError(
+			`the provider at ${configuredIssuer} declares its issuer as ${issuer}. ` +
+				"Use that value for both RELAIS_WEB_OIDC_ISSUER and the Go side's " +
+				'RELAIS_OIDC_ISSUER, or relais will reject every token this app obtains.'
+		);
+	}
+
+	return {
+		issuer: typeof issuer === 'string' ? issuer : configuredIssuer,
+		authorization,
+		token,
+		revocation: typeof revocation === 'string' ? revocation : undefined
+	};
+}
+
+/** Resets the memoised discovery. Tests only. */
+export function resetDiscoveryForTests(): void {
+	cachedEndpoints = undefined;
+	lastFailure = undefined;
+}
+
+function client(): OAuth2Client {
+	const { oidc } = config();
+	return new OAuth2Client(oidc.clientId, oidc.clientSecret, redirectUri());
 }
 
 /**
@@ -28,7 +128,8 @@ function provider(): Authentik {
  * server memory, so a deployment with more than one replica works without sticky
  * sessions or a shared store.
  */
-export function beginLogin(cookies: Cookies, returnTo: string): URL {
+export async function beginLogin(cookies: Cookies, returnTo: string): Promise<URL> {
+	const endpoints = await discover();
 	const state = generateState();
 	const verifier = generateCodeVerifier();
 
@@ -43,7 +144,13 @@ export function beginLogin(cookies: Cookies, returnTo: string): URL {
 	cookies.set(VERIFIER_COOKIE, verifier, options);
 	cookies.set(RETURN_COOKIE, safeReturnTo(returnTo), options);
 
-	return provider().createAuthorizationURL(state, verifier, config().oidc.scopes);
+	return client().createAuthorizationURLWithPKCE(
+		endpoints.authorization,
+		state,
+		CodeChallengeMethod.S256,
+		verifier,
+		config().oidc.scopes
+	);
 }
 
 export interface CallbackResult {
@@ -88,9 +195,11 @@ export async function completeLogin(cookies: Cookies, url: URL): Promise<Callbac
 		throw new LoginError('the callback state does not match the one this browser started with');
 	}
 
+	const endpoints = await discover();
+
 	let tokens;
 	try {
-		tokens = await provider().validateAuthorizationCode(code, verifier);
+		tokens = await client().validateAuthorizationCode(endpoints.token, code, verifier);
 	} catch (cause) {
 		if (cause instanceof OAuth2RequestError) {
 			throw new LoginError(`the identity provider rejected the code: ${cause.code}`);
@@ -102,8 +211,9 @@ export async function completeLogin(cookies: Cookies, url: URL): Promise<Callbac
 		// Without one, the session would end the moment the short-lived access token
 		// expired, which reads to a user as being logged out at random.
 		throw new LoginError(
-			'the identity provider issued no refresh token: add offline_access to the scopes ' +
-				'and allow it on the Authentik provider'
+			'the identity provider issued no refresh token: add offline_access to the scopes, ' +
+				'and enable it on the provider (Authentik: allow the offline_access scope; ' +
+				'Keycloak: the client must not have "Use refresh tokens" disabled)'
 		);
 	}
 
@@ -124,11 +234,12 @@ export async function completeLogin(cookies: Cookies, url: URL): Promise<Callbac
 /** Exchanges a refresh token for a new access token. */
 export async function refresh(session: Session): Promise<Session | undefined> {
 	try {
-		const tokens = await provider().refreshAccessToken(session.refreshToken);
+		const endpoints = await discover();
+		const tokens = await client().refreshAccessToken(endpoints.token, session.refreshToken, []);
 		const claims = readClaims(tokens.accessToken());
 		return {
 			accessToken: tokens.accessToken(),
-			// Authentik may or may not rotate the refresh token; keep the old one when
+			// A provider may or may not rotate the refresh token; keep the old one when
 			// it does not, or the next refresh would have nothing to present.
 			refreshToken: tokens.hasRefreshToken() ? tokens.refreshToken() : session.refreshToken,
 			expiresAt: Math.floor(tokens.accessTokenExpiresAt().getTime() / 1000),
@@ -145,7 +256,11 @@ export async function refresh(session: Session): Promise<Session | undefined> {
 /** Best-effort revocation at sign-out. */
 export async function revoke(session: Session): Promise<void> {
 	try {
-		await provider().revokeToken(session.refreshToken);
+		const endpoints = await discover();
+		// Not every provider publishes one, and revocation is optional in OIDC. The
+		// local cookie is what actually ends the session here.
+		if (endpoints.revocation === undefined) return;
+		await client().revokeToken(endpoints.revocation, session.refreshToken);
 	} catch {
 		// The local cookie is cleared regardless. A provider that cannot be reached
 		// must not stop someone signing out.

@@ -235,6 +235,29 @@ runner, exercised by every database-backed test), `obs` (telemetry wiring), and
 ---
 
 ## 4. Notes for what follows
+- **Bind the port before announcing the listener.** `ListenAndServe` binds inside
+  the goroutine, so "http listener started" was logged whether or not the port was
+  free, and a bind failure then raced the sibling shutdown goroutine: `Shutdown`
+  turned the real error into `http.ErrServerClosed`, which is filtered, leaving only
+  a cancelled context. A busy port reported itself as `relais: interrupted` with
+  exit 130. `net.Listen` before `group.Go`, then `server.Serve(listener)`, makes the
+  failure say `http listener on :8080: bind: address already in use` and exit 1.
+- **Anchor every `.gitignore` pattern.** A pattern without a leading slash matches
+  at any depth: a bare `relais`, meant for a binary built at the repository root,
+  excluded the `cmd/relais` directory and published a repository with no main
+  package. Three CI jobs failed with "directory not found", which says nothing about
+  the cause. `git check-ignore -v <path>` names the offending line.
+- **A test that reads the ambient environment reports on the shell, not the code.**
+  `config.LoadFrom` merged its overlay over `os.Environ()`, so the assertion that an
+  absent `RELAIS_DB_URL` is rejected held only where that variable happened to be
+  unset. It passed locally and failed in CI, which exports it. A non-nil overlay now
+  replaces the environment entirely.
+- **Check that an edit landed where it was aimed.** The three lessons above were
+  written by matching the heading `## Notes for what follows`, which does not exist —
+  this section is `## 4. Notes for what follows`. The edits silently did nothing and
+  were reported as done. A `grep` for the inserted text is the difference between
+  recording a lesson and believing one was recorded.
+
 
 - **go-smtp is pre-1.0**: its auth API changed between minor versions
   (`AuthPlain` → `sasl.Server`), and it manages its own connection deadlines,

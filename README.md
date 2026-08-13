@@ -320,3 +320,47 @@ Notes for Coolify:
   neither a shell nor curl.
 - SMTP traffic does not go through the HTTP reverse proxy: it needs an exposed TCP
   port and a mounted certificate.
+
+## Running the admin interface locally
+
+The interface authenticates through OIDC and has no local bypass, so it needs a
+provider. `docker compose --profile auth up -d` starts a Keycloak with the realm
+already imported — no configuration by hand:
+
+```sh
+task setup                              # generate the keys this repository ships none of
+docker compose up -d                    # Postgres + mailpit
+docker compose --profile auth up -d     # Keycloak on :8180
+task migrate
+task web:key                            # put the value in .env as RELAIS_WEB_SESSION_KEY
+```
+
+Add the OIDC settings to `.env` (the same issuer on both sides, since both validate
+the same `iss` claim):
+
+```sh
+RELAIS_OIDC_ISSUER=http://localhost:8180/realms/relais
+RELAIS_OIDC_AUDIENCE=relais
+RELAIS_WEB_API_URL=http://127.0.0.1:8081
+RELAIS_WEB_ORIGIN=http://localhost:3000
+RELAIS_WEB_OIDC_ISSUER=http://localhost:8180/realms/relais
+RELAIS_WEB_OIDC_CLIENT_ID=relais-web
+RELAIS_WEB_OIDC_CLIENT_SECRET=dev-only-not-a-production-secret
+RELAIS_WEB_INSECURE_COOKIE=true
+```
+
+Then run both halves and sign in at <http://localhost:3000>:
+
+```sh
+task serve      # relais: :8080 public, :8081 admin, :2525 submission
+task web:dev    # the interface, on the host
+```
+
+`ops` / `ops` is an administrator, `watcher` / `watcher` is read-only. Delivered mail
+appears in mailpit at <http://localhost:8025>.
+
+The interface runs on the host rather than in a container because an OIDC issuer URL
+must resolve to the same provider from the browser and from the server exchanging
+the code. On a development machine only `localhost` satisfies both, and a container
+cannot reach it. Deployments have a real hostname, so the image is unchanged; see
+`docs/FRONTEND.md` F13 and F15.

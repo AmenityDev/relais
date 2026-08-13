@@ -18,7 +18,7 @@ function useKey(key: string): void {
 	Object.assign(testEnv, {
 		RELAIS_WEB_API_URL: 'http://relais:8081',
 		RELAIS_WEB_ORIGIN: 'https://mail-admin.example.com',
-		RELAIS_WEB_OIDC_BASE_URL: 'https://auth.example.com',
+		RELAIS_WEB_OIDC_ISSUER: 'https://auth.example.com/realms/relais',
 		RELAIS_WEB_OIDC_CLIENT_ID: 'client',
 		RELAIS_WEB_OIDC_CLIENT_SECRET: 'secret',
 		RELAIS_WEB_SESSION_KEY: key

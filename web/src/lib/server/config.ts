@@ -17,8 +17,11 @@ export interface Config {
 	origin: string;
 
 	oidc: {
-		/** The Authentik root, e.g. https://auth.example.com. NOT the issuer URL. */
-		baseUrl: string;
+		/**
+		 * The OIDC issuer. Endpoints are discovered from it, and it must be the same
+		 * value the Go side validates the `iss` claim against (RELAIS_OIDC_ISSUER).
+		 */
+		issuer: string;
 		clientId: string;
 		clientSecret: string;
 		scopes: string[];
@@ -48,28 +51,19 @@ export function config(): Config {
 
 	const apiBaseUrl = require('RELAIS_WEB_API_URL').replace(/\/+$/, '');
 	const origin = require('RELAIS_WEB_ORIGIN').replace(/\/+$/, '');
-	const baseUrl = require('RELAIS_WEB_OIDC_BASE_URL').replace(/\/+$/, '');
-	// The trap this guard exists for: Authentik's *issuer* is
-	// https://auth.example.com/application/o/<slug>/ and its *endpoints* are at
-	// https://auth.example.com/application/o/authorize/. arctic builds the second
-	// from a root URL, so passing the issuer produces
-	// .../application/o/<slug>/application/o/authorize/ — a 404 from Authentik that
-	// says nothing about the cause. Go needs the issuer; this app needs the root.
-	if (baseUrl.includes('/application/o/')) {
-		problems.push(
-			'RELAIS_WEB_OIDC_BASE_URL must be the Authentik root (https://auth.example.com), ' +
-				'not the issuer URL: the OIDC endpoint paths are appended to it. The issuer, ' +
-				'with /application/o/<slug>/, is what the Go side validates tokens against ' +
-				'(RELAIS_ADMIN_OIDC_ISSUER).'
-		);
-	}
+	// One value, discovered from. The previous design carried the provider's root
+	// URL separately because arctic's Authentik class builds the endpoint paths
+	// itself — two variables that look alike, cannot be swapped, and produce a 404
+	// naming neither when confused. Discovery makes the issuer the only value, and
+	// it is the same one relais validates tokens against.
+	const issuer = require('RELAIS_WEB_OIDC_ISSUER').replace(/\/+$/, '');
 	const clientId = require('RELAIS_WEB_OIDC_CLIENT_ID');
 	const clientSecret = require('RELAIS_WEB_OIDC_CLIENT_SECRET');
 	const rawKey = require('RELAIS_WEB_SESSION_KEY');
 
 	// A cookie key is not something to default. Generating one at boot would mean
 	// every restart signs everybody out, and every replica disagreeing about who is
-	// signed in; committing one would mean every reader of the repository can forge
+	// signed in; committing one would mean every reader of this repository can forge
 	// a session. So it is required, exactly as the Go side requires its own keys.
 	let sessionKey = new Uint8Array(0);
 	if (rawKey !== '') {
@@ -103,7 +97,7 @@ export function config(): Config {
 	const scopes = splitScopes(env.RELAIS_WEB_OIDC_SCOPES);
 	if (!scopes.includes('openid')) problems.push('RELAIS_WEB_OIDC_SCOPES must include openid');
 	if (!scopes.includes('offline_access')) {
-		// Without it Authentik issues no refresh token, and every session would end
+		// Without it most providers issue no refresh token, and every session would end
 		// abruptly when the short-lived access token expired.
 		problems.push('RELAIS_WEB_OIDC_SCOPES must include offline_access to obtain a refresh token');
 	}
@@ -121,7 +115,7 @@ export function config(): Config {
 	cached = {
 		apiBaseUrl,
 		origin,
-		oidc: { baseUrl, clientId, clientSecret, scopes },
+		oidc: { issuer, clientId, clientSecret, scopes },
 		sessionKey,
 		secureCookie,
 		refreshSkewSeconds
