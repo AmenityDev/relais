@@ -1,0 +1,20 @@
+@import 'tailwindcss';
+
+/* Tailwind 4 configures itself from CSS. Only the few tokens the six screens
+   actually share live here; everything else is a utility class in the markup. */
+@theme {
+	--color-brand-50: oklch(0.97 0.02 250);
+	--color-brand-100: oklch(0.93 0.04 250);
+	--color-brand-600: oklch(0.55 0.18 250);
+	--color-brand-700: oklch(0.48 0.17 250);
+}
+
+/* A focus ring that is visible on every background used here. Removing focus
+   styling is the most common accessibility regression in an admin panel, so it is
+   stated once, globally, rather than per component. */
+@layer base {
+	:focus-visible {
+		outline: 2px solid var(--color-brand-600);
+		outline-offset: 2px;
+	}
+}

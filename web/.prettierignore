@@ -1,0 +1,7 @@
+.svelte-kit/
+build/
+node_modules/
+package-lock.json
+# Generated from the OpenAPI document; formatting it would create a diff on every
+# regeneration.
+src/lib/api.generated.d.ts
