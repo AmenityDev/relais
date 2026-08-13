@@ -1,0 +1,82 @@
+# Multi-stage, multi-arch build for the relais admin interface.
+#
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f deploy/Dockerfile.web -t <registry>/relais-web:<tag> --push .
+#
+# Node is unavoidable here: this application is a backend-for-frontend, and the
+# server half is what keeps every token out of the browser (F2). The result still
+# runs as a non-root user with no package manager and no build toolchain.
+#
+# Build context is the repository root so the image is built from the same tree the
+# generated types were produced from. Whether those types still match the OpenAPI
+# document is checked in CI, where the pinned generator can be fetched — doing it
+# here would mean resolving a package that is deliberately not in the lockfile.
+
+# --- dependencies --------------------------------------------------------
+# Its own stage so that a source-only change reuses the installed modules. Node
+# does not cross-compile, so no BUILDPLATFORM here: each architecture installs its
+# own binaries, which is what makes the native ones (rolldown, tailwind's oxide)
+# correct for the target.
+FROM node:26-alpine AS deps
+
+WORKDIR /app
+
+# npm ci, not npm install: it installs exactly the lockfile and fails if
+# package.json and the lock disagree, so an image can never be built from
+# dependencies nobody committed.
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+# --- build ---------------------------------------------------------------
+FROM node:26-alpine AS build
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY web/ ./
+
+ARG VERSION=dev
+ENV PUBLIC_RELAIS_VERSION=$VERSION
+
+# Type-check before bundling. Vite would happily emit a bundle from code that does
+# not type-check, and this image is what gets deployed.
+RUN npm run check
+RUN npm run build
+
+# Drop everything the runtime does not need. adapter-node's output is
+# self-contained apart from the production dependencies.
+RUN npm prune --omit=dev
+
+# --- runtime -------------------------------------------------------------
+# Alpine rather than distroless: adapter-node needs a Node runtime, and the
+# official image is the one that gets security updates. node:alpine already
+# provides an unprivileged `node` user.
+FROM node:26-alpine AS runtime
+
+# dumb-init, because Node as PID 1 does not reap children and ignores the default
+# SIGTERM disposition, which turns every deploy into a ten-second wait for the
+# orchestrator to lose patience.
+RUN apk add --no-cache dumb-init
+
+ENV NODE_ENV=production
+# adapter-node reads these. 0.0.0.0 so the platform's proxy can reach it; this
+# container has no public route of its own.
+ENV HOST=0.0.0.0
+ENV PORT=3000
+
+WORKDIR /app
+
+COPY --from=build --chown=node:node /app/build ./build
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/package.json ./package.json
+
+USER node
+EXPOSE 3000
+
+# /healthz answers before configuration is read, so a container that is up but
+# misconfigured is still reported as alive and the logs explain why.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+	CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "build/index.js"]

@@ -27,7 +27,7 @@ beforeEach(() => {
 	Object.assign(testEnv, {
 		RELAIS_WEB_API_URL: 'http://relais:8081',
 		RELAIS_WEB_ORIGIN: 'https://mail-admin.example.com',
-		RELAIS_WEB_OIDC_ISSUER: 'https://auth.example.com/application/o/relais',
+		RELAIS_WEB_OIDC_BASE_URL: 'https://auth.example.com',
 		RELAIS_WEB_OIDC_CLIENT_ID: 'client-id',
 		RELAIS_WEB_OIDC_CLIENT_SECRET: 'client-secret',
 		RELAIS_WEB_SESSION_KEY: Buffer.alloc(32, 6).toString('base64')
@@ -161,7 +161,7 @@ describe('completeLogin', () => {
 		});
 		expect(error).toBeInstanceOf(LoginError);
 		expect((error as Error).message).toMatch(/identity provider refused/);
-		expect((error as LoginError).detail).toBe('nope');
+		expect((error as InstanceType<typeof LoginError>).detail).toBe('nope');
 	});
 
 	it('clears the handshake cookies whichever way it ends', async () => {

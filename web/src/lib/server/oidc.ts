@@ -17,7 +17,8 @@ const HANDSHAKE_MAX_AGE = 10 * 60;
 
 function provider(): Authentik {
 	const { oidc } = config();
-	return new Authentik(oidc.issuer, oidc.clientId, oidc.clientSecret, redirectUri());
+	// oidc.baseUrl is the Authentik root; arctic appends the endpoint paths itself.
+	return new Authentik(oidc.baseUrl, oidc.clientId, oidc.clientSecret, redirectUri());
 }
 
 /**

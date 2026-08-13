@@ -182,6 +182,65 @@ jobs:
             internal/mailnorm/testdata/fuzz/
           if-no-files-found: ignore
 
+  web:
+    name: Admin interface
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # Pinned to the same major as deploy/Dockerfile.web, so CI cannot pass on a
+          # runtime the image does not use. package.json's engines field is a range
+          # (">=22"), which would let CI drift ahead of the image.
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # npm ci, not install: it installs exactly the lockfile and fails when
+      # package.json and the lock disagree, so CI cannot pass against dependencies
+      # nobody committed.
+      - name: Install
+        run: npm ci
+
+      - name: Generated API types match the OpenAPI document
+        # The types are generated from the document, which is itself generated from
+        # the Go structs. Without this check, a handler could change, the document be
+        # regenerated, and the frontend keep compiling against the old shape — the
+        # exact drift the whole chain exists to prevent, one link further along.
+        #
+        # The generator is not a dependency of the app: its TypeScript peer is ^5 and
+        # the app needs 6 for svelte-check and typescript-eslint. Pinned here instead.
+        run: |
+          npx --yes openapi-typescript@7.13.0 ../docs/openapi-admin.json -o /tmp/expected.d.ts
+          if ! diff -q /tmp/expected.d.ts src/lib/api.generated.d.ts; then
+            echo "src/lib/api.generated.d.ts is out of date. Regenerate it with:"
+            echo "  task web:types"
+            diff -u src/lib/api.generated.d.ts /tmp/expected.d.ts | head -60
+            exit 1
+          fi
+
+      - name: Type-check
+        run: npm run check
+
+      - name: Format
+        run: npx --no-install prettier --check .
+
+      - name: Lint
+        run: npx --no-install eslint .
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        # Configuration is validated as the server starts, not as it builds, so the
+        # build needs none of it. Asserted here: a build that required secrets could
+        # not be produced by CI at all.
+        run: npm run build
+
   image:
     name: Build the container image
     runs-on: ubuntu-latest
@@ -207,7 +266,7 @@ jobs:
 
       # Build only, never push: this job exists to catch a broken Dockerfile, and
       # publishing is a release decision rather than a CI one.
-      - name: Build for amd64 and arm64
+      - name: Build the backend for amd64 and arm64
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -216,5 +275,19 @@ jobs:
           push: false
           build-args: |
             VERSION=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build the admin interface for amd64 and arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile.web
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ github.sha }}
+          # A separate cache scope: the two images share no layers, and one scope
+          # would have them evicting each other.
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web

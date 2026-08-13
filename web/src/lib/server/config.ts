@@ -17,7 +17,8 @@ export interface Config {
 	origin: string;
 
 	oidc: {
-		issuer: string;
+		/** The Authentik root, e.g. https://auth.example.com. NOT the issuer URL. */
+		baseUrl: string;
 		clientId: string;
 		clientSecret: string;
 		scopes: string[];
@@ -47,7 +48,21 @@ export function config(): Config {
 
 	const apiBaseUrl = require('RELAIS_WEB_API_URL').replace(/\/+$/, '');
 	const origin = require('RELAIS_WEB_ORIGIN').replace(/\/+$/, '');
-	const issuer = require('RELAIS_WEB_OIDC_ISSUER').replace(/\/+$/, '');
+	const baseUrl = require('RELAIS_WEB_OIDC_BASE_URL').replace(/\/+$/, '');
+	// The trap this guard exists for: Authentik's *issuer* is
+	// https://auth.example.com/application/o/<slug>/ and its *endpoints* are at
+	// https://auth.example.com/application/o/authorize/. arctic builds the second
+	// from a root URL, so passing the issuer produces
+	// .../application/o/<slug>/application/o/authorize/ — a 404 from Authentik that
+	// says nothing about the cause. Go needs the issuer; this app needs the root.
+	if (baseUrl.includes('/application/o/')) {
+		problems.push(
+			'RELAIS_WEB_OIDC_BASE_URL must be the Authentik root (https://auth.example.com), ' +
+				'not the issuer URL: the OIDC endpoint paths are appended to it. The issuer, ' +
+				'with /application/o/<slug>/, is what the Go side validates tokens against ' +
+				'(RELAIS_ADMIN_OIDC_ISSUER).'
+		);
+	}
 	const clientId = require('RELAIS_WEB_OIDC_CLIENT_ID');
 	const clientSecret = require('RELAIS_WEB_OIDC_CLIENT_SECRET');
 	const rawKey = require('RELAIS_WEB_SESSION_KEY');
@@ -106,7 +121,7 @@ export function config(): Config {
 	cached = {
 		apiBaseUrl,
 		origin,
-		oidc: { issuer, clientId, clientSecret, scopes },
+		oidc: { baseUrl, clientId, clientSecret, scopes },
 		sessionKey,
 		secureCookie,
 		refreshSkewSeconds

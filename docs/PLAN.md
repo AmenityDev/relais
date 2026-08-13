@@ -140,6 +140,7 @@ accident: there is exactly one implementation, with exactly one set of callers.
 | M7 | Admin API | full CRUD, OIDC JWT + RBAC, dry runs, separate listener | ✅ |
 | M8 | SvelteKit | OIDC (arctic), screens, HyperDX link | ⬜ |
 | M8.1 | OpenAPI generated from the Go types, with 15 anti-drift tests | ✅ |
+| M8 | SvelteKit admin: six screens, BFF, 61 tests | ✅ |
 | M9 | Packaging | multi-arch buildx, GitHub Actions CI, Coolify runbook | partial |
 
 **The backend is complete.** `serve` exposes the REST API, the submission server,

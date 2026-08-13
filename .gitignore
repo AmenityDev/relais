@@ -18,10 +18,13 @@ coverage.*
 # Fuzz corpus entries that reproduce a failure are worth committing; the cache
 # is not, and Go keeps it outside the repo anyway.
 
-# Frontend (arrives with the SvelteKit admin).
+# Frontend. Anchored under web/ rather than bare, for the reason recorded above.
 web/node_modules/
 web/.svelte-kit/
 web/build/
+web/.env
+web/.env.*
+!web/.env.example
 
 # Editors.
 .idea/

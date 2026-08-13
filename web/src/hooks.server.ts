@@ -14,6 +14,16 @@ import {
 // reads the cookie itself, so there is exactly one place where a session becomes
 // trusted.
 
+// Configuration is validated as this module is loaded, which is to say as the
+// server starts. A container that cannot work does not run.
+//
+// The alternative — validating lazily and letting /healthz answer anyway — was
+// what this file did first, and it was wrong: an orchestrator would report the
+// container healthy and keep it in rotation, serving 500s to every request while
+// the probe stayed green. The Go side refuses to start without its keys for the
+// same reason, and the two halves should fail the same way.
+config();
+
 /** Paths that must work without a session, or login could never happen. */
 const PUBLIC_PREFIXES = ['/auth/login', '/auth/callback', '/auth/error', '/healthz'];
 
@@ -26,8 +36,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// line in the Go log can be joined. Otherwise mint one.
 	event.locals.requestId = event.request.headers.get('x-request-id') ?? crypto.randomUUID();
 
-	// A liveness probe must not depend on configuration being valid, or a
-	// misconfigured container would look healthy right up to the first real request.
+	// Reached only when configuration is valid, since an invalid one stops the
+	// process from starting at all. So a 200 here means the app can actually serve.
 	if (event.url.pathname === '/healthz') {
 		return new Response('ok\n', { headers: { 'content-type': 'text/plain' } });
 	}

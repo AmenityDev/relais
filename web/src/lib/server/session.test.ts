@@ -18,12 +18,25 @@ function useKey(key: string): void {
 	Object.assign(testEnv, {
 		RELAIS_WEB_API_URL: 'http://relais:8081',
 		RELAIS_WEB_ORIGIN: 'https://mail-admin.example.com',
-		RELAIS_WEB_OIDC_ISSUER: 'https://auth.example.com/application/o/relais',
+		RELAIS_WEB_OIDC_BASE_URL: 'https://auth.example.com',
 		RELAIS_WEB_OIDC_CLIENT_ID: 'client',
 		RELAIS_WEB_OIDC_CLIENT_SECRET: 'secret',
 		RELAIS_WEB_SESSION_KEY: key
 	});
 	resetConfigForTests();
+}
+
+/**
+ * Inverts one byte in place.
+ *
+ * A helper rather than `bytes[i] ^= 0xff` because noUncheckedIndexedAccess is
+ * correct that an index access may be undefined, and silencing it with `!` in a
+ * test would be the one place the compiler is told to stop checking.
+ */
+function flipByte(bytes: Buffer, index: number): void {
+	const current = bytes.at(index);
+	if (current === undefined) throw new Error(`no byte at ${index}`);
+	bytes.writeUInt8(current ^ 0xff, index);
 }
 
 const session = {
@@ -62,14 +75,14 @@ describe('the encrypted session cookie', () => {
 		// a byte must fail authentication rather than decrypt to something else.
 		const value = await encodeSession(session);
 		const bytes = Buffer.from(value, 'base64url');
-		bytes[bytes.length - 1] ^= 0xff;
+		flipByte(bytes, bytes.length - 1);
 		expect(await decodeSession(bytes.toString('base64url'))).toBeUndefined();
 	});
 
 	it('rejects a tampered nonce', async () => {
 		const value = await encodeSession(session);
 		const bytes = Buffer.from(value, 'base64url');
-		bytes[0] ^= 0xff;
+		flipByte(bytes, 0);
 		expect(await decodeSession(bytes.toString('base64url'))).toBeUndefined();
 	});
 

@@ -56,6 +56,9 @@ new Authentik(baseURL, clientId, clientSecret, redirectURI)
 | F9 | Two containers; **nothing of relais is exposed to the browser** | accepted |
 | F10 | No client-side data fetching: `load` and form actions only | accepted |
 | F11 | A separate HTTP listener for the admin API (Go side) | accepted, implemented |
+| F12 | The API description is generated from Go, never written | accepted, implemented |
+| F13 | The Authentik root and the issuer are distinct variables | accepted, implemented |
+| F14 | The container refuses to start when misconfigured | accepted, implemented |
 
 ### F2 — the browser never holds a token
 
@@ -242,7 +245,37 @@ web/
 
 - ✅ **OpenAPI emitted by the Go side**, from which the TypeScript types are
   generated. See F12.
-- ⬜ The cookie-size guard rail described in F3.
+- ✅ The cookie-size guard rail described in F3. It refuses rather than warns above
+  4096 bytes, because what a browser does with an oversized cookie is discard it
+  silently: the operator sees a login loop and the logs say nothing.
+
+### F13 — the Authentik root is not the issuer
+
+Two values that look alike and are not interchangeable:
+
+| Variable | Value | Who needs it |
+| --- | --- | --- |
+| `RELAIS_WEB_OIDC_BASE_URL` | `https://auth.example.com` | relais-web, to build the endpoint URLs |
+| `RELAIS_ADMIN_OIDC_ISSUER` | `https://auth.example.com/application/o/<slug>/` | relais, to validate tokens against the JWKS |
+
+arctic appends `/application/o/authorize/` to the base URL, so passing the issuer
+produces `…/application/o/<slug>/application/o/authorize/` and a 404 from Authentik
+that mentions neither variable. Configuration refuses a base URL containing
+`/application/o/` and names the other variable in the message.
+
+Found by running the container and reading the redirect it produced, not by
+reasoning about it.
+
+### F14 — the container refuses to start when misconfigured
+
+Configuration is validated as `hooks.server.ts` loads, which is to say as the
+server starts, and `/healthz` answers only once that has succeeded.
+
+The first version validated lazily and let the probe answer regardless, with a
+comment claiming a liveness probe should not depend on configuration. That was
+backwards: an orchestrator would report the container healthy and keep it in
+rotation, serving 500s to every request while the probe stayed green. relais itself
+refuses to start without its keys, and the two halves should fail the same way.
 
 ### F12 — the API description is generated, never written
 

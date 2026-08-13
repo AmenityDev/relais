@@ -8,7 +8,7 @@ const { config, redirectUri, resetConfigForTests } = await import('./config');
 const VALID = {
 	RELAIS_WEB_API_URL: 'http://relais:8081',
 	RELAIS_WEB_ORIGIN: 'https://mail-admin.example.com',
-	RELAIS_WEB_OIDC_ISSUER: 'https://auth.example.com/application/o/relais',
+	RELAIS_WEB_OIDC_BASE_URL: 'https://auth.example.com',
 	RELAIS_WEB_OIDC_CLIENT_ID: 'client',
 	RELAIS_WEB_OIDC_CLIENT_SECRET: 'secret',
 	RELAIS_WEB_SESSION_KEY: Buffer.alloc(32, 3).toString('base64')
@@ -142,5 +142,25 @@ describe('configuration', () => {
 		expect(config().refreshSkewSeconds).toBe(60);
 		setEnv({ RELAIS_WEB_REFRESH_SKEW_SECONDS: '120' });
 		expect(config().refreshSkewSeconds).toBe(120);
+	});
+});
+
+describe('the Authentik base URL', () => {
+	it('refuses the issuer URL, which is the mistake that costs an afternoon', () => {
+		// arctic appends /application/o/authorize/ to this value. Given the issuer, the
+		// result is .../application/o/relais/application/o/authorize/ — a 404 from
+		// Authentik whose message mentions neither variable.
+		setEnv({ RELAIS_WEB_OIDC_BASE_URL: 'https://auth.example.com/application/o/relais' });
+		expect(() => config()).toThrow(/must be the Authentik root/);
+	});
+
+	it('names the Go-side variable so the two are not confused', () => {
+		setEnv({ RELAIS_WEB_OIDC_BASE_URL: 'https://auth.example.com/application/o/relais/' });
+		expect(() => config()).toThrow(/RELAIS_ADMIN_OIDC_ISSUER/);
+	});
+
+	it('accepts the root', () => {
+		setEnv({ RELAIS_WEB_OIDC_BASE_URL: 'https://auth.example.com' });
+		expect(config().oidc.baseUrl).toBe('https://auth.example.com');
 	});
 });

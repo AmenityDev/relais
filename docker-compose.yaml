@@ -92,5 +92,38 @@ services:
     # Migrations are a deliberate step, never implicit in serve.
     command: ["serve"]
 
+  # The admin interface. Its own profile, because the usual development loop runs
+  # relais from the host and does not need it.
+  #
+  #   docker compose --profile web up
+  #
+  # It needs a real Authentik to be useful: OIDC is the only way in, by design, and
+  # there is no local bypass. That is deliberate — a development-only login is
+  # exactly the kind of thing that survives into production.
+  relais-web:
+    profiles: ["web"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+      args:
+        VERSION: dev
+    environment:
+      # The admin listener, on the compose network. Never published.
+      RELAIS_WEB_API_URL: http://relais:8081
+      RELAIS_WEB_ORIGIN: http://localhost:3000
+      # The Authentik ROOT, not the issuer: the endpoint paths are appended to it.
+      # The issuer, with /application/o/<slug>/, is what relais itself validates
+      # tokens against.
+      RELAIS_WEB_OIDC_BASE_URL: ${RELAIS_WEB_OIDC_BASE_URL:?missing - the Authentik root, e.g. https://auth.example.com}
+      RELAIS_WEB_OIDC_CLIENT_ID: ${RELAIS_WEB_OIDC_CLIENT_ID:?missing - the Authentik provider client id}
+      RELAIS_WEB_OIDC_CLIENT_SECRET: ${RELAIS_WEB_OIDC_CLIENT_SECRET:?missing - the Authentik provider client secret}
+      # No default, for the same reason the Go side has none: a committed key is a
+      # key every reader of this repository can forge a session with.
+      RELAIS_WEB_SESSION_KEY: ${RELAIS_WEB_SESSION_KEY:?missing - run "task web:key" and put the value in .env}
+      # Plain HTTP on loopback only. config() refuses this for any other origin.
+      RELAIS_WEB_INSECURE_COOKIE: "true"
+    ports:
+      - "127.0.0.1:3000:3000"
+
 volumes:
   postgres-data:

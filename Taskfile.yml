@@ -163,10 +163,53 @@ tasks:
       - go run ./cmd/relais keygen key
       - go run ./cmd/relais keygen pepper
 
+  web:install:
+    desc: Install the admin interface's dependencies
+    dir: web
+    cmds:
+      - npm ci
+    sources:
+      - web/package.json
+      - web/package-lock.json
+
+  web:dev:
+    desc: Run the admin interface against a local relais
+    dir: web
+    deps: [web:install]
+    cmds:
+      - npm run dev
+
+  web:check:
+    desc: Type-check, lint and test the admin interface
+    dir: web
+    deps: [web:install]
+    cmds:
+      - npm run check
+      - npx --no-install prettier --check .
+      - npx --no-install eslint .
+      - npm run test
+
+  web:types:
+    desc: Regenerate the TypeScript types from the OpenAPI document
+    deps: [openapi]
+    dir: web
+    cmds:
+      - npm run types
+
+  web:key:
+    desc: Generate a session key for the admin interface
+    cmds:
+      - node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+
   docker:build:
     desc: Build the production image for the local architecture
     cmds:
       - docker build -f deploy/Dockerfile --build-arg VERSION={{.VERSION}} -t {{.IMAGE}}:{{.VERSION}} .
+
+  web:docker:build:
+    desc: Build the admin interface image
+    cmds:
+      - docker build -f deploy/Dockerfile.web --build-arg VERSION={{.VERSION}} -t {{.IMAGE}}-web:{{.VERSION}} .
 
   docker:buildx:
     desc: Build and push the multi-arch image (set REGISTRY)
