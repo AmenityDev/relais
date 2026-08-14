@@ -1,6 +1,6 @@
 // Command relais is the single binary for the whole service.
 //
-// One binary keeps deployment simple: Coolify runs `relais serve`, and the same
+// One binary keeps deployment simple: a platform runs `relais serve`, and the same
 // image provides the bootstrap and maintenance commands. Subsystems inside serve
 // (API, submission server, workers) are individually switchable, so splitting
 // them across containers later needs no code change.
@@ -88,7 +88,9 @@ Commands:
   keygen key|pepper        Generate key material for the environment
   backend add|list|rm|rewrap
                            Manage outbound SMTP backends
-  domain add|list|rm       Manage sending domains
+  domain add|list|rm|resolve
+                           Manage sending domains, and ask which relay
+                           carries one
   credential create|list|show|revoke|pattern
                            Manage sender credentials and their allow-lists
   healthcheck              Probe the readiness endpoint (for HEALTHCHECK)

@@ -1,12 +1,14 @@
-# relais — implementation plan
+# relais — architecture
 
-An SMTP/API gateway between internal applications and an outbound SMTP relay (OCI
-Email Delivery). relais authenticates senders, strictly validates `From`
-addresses, and relays. **It does not handle DKIM**: signing happens downstream, at
-the relay.
+Why the code has the shape it has.
 
-This document is the reference for the decisions that were taken. It is updated
-when a decision changes, not when code is written.
+This is the decision record: what was chosen, and the reasoning that would
+otherwise have to be reconstructed from the code. It is updated when a decision
+changes, not when code is written. For what relais does and how to run it, see the
+[README](../README.md); for the admin interface, [FRONTEND.md](FRONTEND.md).
+
+The final section collects mistakes made while building it, kept because each one
+explains a constraint in the code that looks arbitrary without it.
 
 ---
 
@@ -142,13 +144,14 @@ accident: there is exactly one implementation, with exactly one set of callers.
 | M8b | SvelteKit | BFF, OIDC discovery, six screens, 67 tests | ✅ |
 | M9 | Packaging | multi-arch buildx, CI, GHCR publish gated on every check | ✅ |
 
-**The backend is complete.** `serve` exposes the REST API, the submission server,
-the admin API on its own port, the health probes and the workers. Only the
-frontend is left, and its design is settled in [FRONTEND.md](FRONTEND.md).
+**Both halves are complete.** `serve` exposes the sending API, the submission
+server, the admin API on its own port, the health probes and the workers; the admin
+interface is a separate container whose design is recorded in
+[FRONTEND.md](FRONTEND.md).
 
 One operational decision worth remembering: **OIDC discovery is lazy**. It happens
 on the first admin request rather than at startup, and a failure is remembered for
-a few seconds instead of being retried on every request. An Authentik outage
+a few seconds instead of being retried on every request. A provider outage
 therefore never stops relais from relaying mail — it only makes the admin UI
 unavailable, with a `503` rather than a `401`.
 

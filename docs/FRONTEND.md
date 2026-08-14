@@ -199,7 +199,7 @@ service with a public hostname and Traefik TLS.
 | `/v1/emails` | internal applications | only if an application lives outside the network |
 | SMTP submission (587) | WordPress, PHP scripts | same reasoning |
 
-If every application runs inside the same Coolify network, **nothing of relais
+If every application runs on the same network as relais, **nothing of it
 needs to be exposed**.
 
 ### F11 — separate admin listener (Go side)
@@ -352,8 +352,8 @@ rather than asking for it twice. Two variables that must agree are one variable,
 and a mismatch here produces that same silent refusal.
 
 Found while testing writes through the interface. It also invalidated an earlier
-check of mine: a viewer's write returned 403, which I read as the role check when it
-was the CSRF check. Both were re-verified once `ORIGIN` was set — the refusal now
+check: a viewer's write returned 403, which read as the role check when it was the
+CSRF check. Both were re-verified once `ORIGIN` was set — the refusal now
 carries "read-only access", and an editor's write reaches the database.
 
 ## Running the whole stack locally

@@ -133,7 +133,7 @@ if login ops /tmp/relais-smoke-ops.txt; then
 		ok "the session cookie is $size bytes, inside the comfortable band"
 	elif [ "$size" -lt 4096 ]; then
 		fail "the session cookie is $size bytes: past the warning threshold" \
-			"trim the claims in the provider's mapping; see docs/FRONTEND.md F3"
+			"trim the claims the provider puts in the access token; see docs/FRONTEND.md F3"
 	else
 		fail "the session cookie is $size bytes: browsers will drop it"
 	fi

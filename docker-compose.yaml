@@ -6,8 +6,8 @@
 # By default only the infrastructure runs, so that relais can be run from the
 # host with `go run ./cmd/relais serve` and a debugger attached.
 #
-# This file is for development. Production deployment (Coolify) uses
-# deploy/Dockerfile with configuration supplied by the platform.
+# This file is for development. Production runs the published images, configured
+# entirely through the environment; see the README.
 
 name: relais-dev
 

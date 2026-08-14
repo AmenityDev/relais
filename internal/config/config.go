@@ -58,7 +58,7 @@ type Database struct {
 }
 
 // HTTP configures the REST + admin API listener. TLS is deliberately absent:
-// the HTTP surface is meant to sit behind Coolify's reverse proxy.
+// the HTTP surface is meant to sit behind a reverse proxy.
 type HTTP struct {
 	Enabled           bool          `env:"ENABLED" envDefault:"true"`
 	Addr              string        `env:"ADDR" envDefault:":8080"`

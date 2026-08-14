@@ -142,7 +142,7 @@ export async function setSession(cookies: Cookies, session: Session): Promise<vo
 				bytes: total,
 				limit: COOKIE_LIMIT_BYTES,
 				groups: session.groups.length,
-				hint: 'trim the claims in the Authentik property mapping; see docs/FRONTEND.md F3'
+				hint: 'trim the claims the provider puts in the access token; see docs/FRONTEND.md F3'
 			})
 		);
 	}

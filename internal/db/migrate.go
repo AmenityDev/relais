@@ -36,7 +36,7 @@ func (r MigrateResult) Empty() bool { return len(r.AppSteps) == 0 && len(r.River
 // MigrateUp applies the application schema then the river schema.
 //
 // Both run while holding a session-level advisory lock, so several replicas
-// starting at once (or a rolling Coolify deploy) cannot race. Migrations are
+// starting at once, as a rolling deploy does, cannot race. Migrations are
 // never triggered implicitly by `serve`; this is only reachable from
 // `relais migrate`.
 func MigrateUp(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) (MigrateResult, error) {

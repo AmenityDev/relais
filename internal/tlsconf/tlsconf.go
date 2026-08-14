@@ -3,7 +3,7 @@
 // Two sources are supported, and exactly one is chosen by configuration:
 //
 //   - Mounted PEM files, which is how production works. Any tool that writes a
-//     cert to disk fits (certbot, Caddy, a Coolify volume, cert-manager), and
+//     cert to disk fits (certbot, Caddy, cert-manager, a mounted volume), and
 //     Reload picks up a renewal without a restart.
 //   - A generated self-signed certificate, for tests and local development.
 //     It is refused in a production environment unless explicitly forced,
