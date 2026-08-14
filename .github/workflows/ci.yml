@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+    # Release tags, which are what produce a semver-tagged image.
+    tags: ["v*"]
   pull_request:
   # So a broken CI can be re-run without pushing an empty commit.
   workflow_dispatch:
@@ -304,3 +306,103 @@ jobs:
           # would have them evicting each other.
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
+
+  publish:
+    name: Publish the images
+    runs-on: ubuntu-latest
+
+    # Every check, by name. A publish that could outrun the test job would defeat the
+    # point of having one: this is the gate the whole workflow exists to feed.
+    needs: [lint, test, fuzz, web, image]
+
+    # Never from a pull request. A fork's PR would otherwise publish code nobody has
+    # reviewed under this repository's name, and the token it gets could not push
+    # anyway — failing late and confusingly instead of not running.
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      # Lets the built-in GITHUB_TOKEN push to ghcr.io. No secret to create, rotate,
+      # or leak: the credential is scoped to this repository and expires with the run.
+      packages: write
+
+    strategy:
+      # Both images are published even if one fails, so a broken frontend build does
+      # not also withhold a good backend.
+      fail-fast: false
+      matrix:
+        include:
+          - name: relais
+            dockerfile: deploy/Dockerfile
+            cache-scope: backend
+          - name: relais-web
+            dockerfile: deploy/Dockerfile.web
+            cache-scope: web
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags and history, so `git describe` can name a build.
+          fetch-depth: 0
+
+      - name: Describe the build
+        id: version
+        # The value baked into the binary and reported by `relais version`. A tag gives
+        # its own name; a commit on main gives the nearest tag plus a distance and a
+        # short sha, which is enough to find the exact source of a running container.
+        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide the tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
+          # sha- is immutable and is what a rollback pins to. `main` moves, and is for
+          # following the branch. `latest` is deliberately NOT on main: a self-hosted
+          # deployment that follows `latest` should follow releases, not every commit.
+          tags: |
+            type=raw,value=main,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.name }}
+            org.opencontainers.image.description=Self-hosted SMTP/API mail gateway with scoped sender credentials
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          # Shared with the image job's scopes, so a push reuses what the pull request
+          # already built rather than paying for both architectures twice.
+          cache-from: type=gha,scope=${{ matrix.cache-scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache-scope }}
+          # Records how the image was built, which is what makes the published artefact
+          # traceable to this workflow and this commit.
+          provenance: mode=max
+          sbom: true
+
+      - name: Report what was published
+        run: |
+          {
+            echo "### ${{ matrix.name }}"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

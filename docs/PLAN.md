@@ -140,7 +140,7 @@ accident: there is exactly one implementation, with exactly one set of callers.
 | M7 | Admin API | full CRUD, OIDC JWT + RBAC, dry runs, separate listener | ✅ |
 | M8a | OpenAPI | generated from the Go types, 15 anti-drift tests, CI diff | ✅ |
 | M8b | SvelteKit | BFF, OIDC discovery, six screens, 67 tests | ✅ |
-| M9 | Packaging | multi-arch buildx, GitHub Actions CI, Coolify runbook | partial |
+| M9 | Packaging | multi-arch buildx, CI, GHCR publish gated on every check | ✅ |
 
 **The backend is complete.** `serve` exposes the REST API, the submission server,
 the admin API on its own port, the health probes and the workers. Only the

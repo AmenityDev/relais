@@ -364,3 +364,49 @@ must resolve to the same provider from the browser and from the server exchangin
 the code. On a development machine only `localhost` satisfies both, and a container
 cannot reach it. Deployments have a real hostname, so the image is unchanged; see
 `docs/FRONTEND.md` F13 and F15.
+
+## Container images
+
+CI publishes two images to GHCR once every check has passed — lint, the suite with
+the race detector, the fuzz targets, the frontend checks and both image builds:
+
+| Image | Contents | Ports |
+| --- | --- | --- |
+| `ghcr.io/amenitydev/relais` | the gateway: REST API, submission server, workers | 8080 public, 8081 admin, 2525 submission |
+| `ghcr.io/amenitydev/relais-web` | the admin interface | 3000 |
+
+Both are `linux/amd64` and `linux/arm64`, non-root, with no shell in the backend image.
+
+Tags:
+
+- `sha-<short>` — immutable, one per commit. This is what a rollback pins to.
+- `main` — moves with the default branch.
+- `1.2.3` and `1.2`, plus `latest` — only from a `v*` tag. `latest` deliberately does
+  not follow `main`: a deployment that tracks it should track releases, not every
+  commit.
+
+`relais version` reports `git describe`, so a running container can be traced back to
+its source.
+
+### Deploying them
+
+There is nothing platform-specific to know. Both images are configured entirely
+through the environment (`.env.example` documents every variable), and neither reads
+a config file.
+
+Three things are worth stating because getting them wrong fails quietly:
+
+- **Migrations are never implicit.** Run `relais migrate up` as its own step before
+  starting a new version. `serve` will not do it for you.
+- **The two issuers must be the same value.** `RELAIS_OIDC_ISSUER` (what relais
+  validates tokens against) and `RELAIS_WEB_OIDC_ISSUER` (what the interface
+  discovers its endpoints from) deal in the same `iss` claim. A mismatch means every
+  token the interface obtains is rejected, and the error names neither variable.
+- **`RELAIS_WEB_ORIGIN` must be the interface's real public origin.** The image
+  derives the CSRF origin and the OIDC redirect URI from it. Get it wrong and
+  navigation works while every write is refused — see `docs/FRONTEND.md` F15.
+
+What to expose: the interface needs a public hostname. The admin API on 8081 does
+not, and should not — the separate listener exists so that exposure is a network
+decision rather than a routing rule (F11). The sending API and SMTP submission only
+need exposing if an application lives outside the network.
