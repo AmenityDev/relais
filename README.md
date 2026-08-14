@@ -335,7 +335,14 @@ its source.
 
 ### Running them
 
-There is nothing platform-specific to know. Both images are configured entirely
+A ready-made stack for Coolify is in
+[deploy/coolify/docker-compose.yaml](deploy/coolify/docker-compose.yaml): the two
+services, an external Postgres, and a one-shot container that applies the migrations
+before the gateway starts. It uses Coolify's magic variables so the interface's domain
+and its `RELAIS_WEB_ORIGIN` cannot disagree, and so the issuer is one value shared by
+both halves.
+
+Otherwise there is nothing platform-specific to know. Both images are configured entirely
 through the environment and neither reads a config file. Postgres is external; any
 standard DSN works, including one pointing at a pooler.
 
@@ -344,10 +351,17 @@ avoids needing `CAP_NET_BIND_SERVICE`.
 
 ### What to expose
 
-The admin interface needs a public hostname. The admin API on 8081 does not, and
-should not — the separate listener exists so that exposure is a network decision. The
-sending API and SMTP submission only need exposing if an application lives outside the
-network; if everything runs alongside relais, nothing of it needs to be public at all.
+The admin interface needs a public hostname. The admin API on 8081 does not, and should
+not — the separate listener exists so that exposure is a network decision, and
+`/admin/v1` answers 404 on the sending port anyway.
+
+Whether the sending API needs a hostname depends on where the callers are. If every
+application shares a network with relais, `http://relais:8080` is enough and nothing has
+to be public. On a platform that gives each application its own network — Coolify does —
+there is no shared name to dial, so the sending API needs a domain like any other
+service. When it has one, set `RELAIS_HTTP_TRUSTED_PROXY_HEADER`: behind a proxy the
+socket peer is the proxy, and without it every rejected submission is recorded against
+the proxy's address rather than the client's.
 
 ### Three things that fail quietly
 
