@@ -284,7 +284,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 15s
       timeout: 5s
@@ -303,26 +303,34 @@ services:
   # the zone you use, or delegate _acme-challenge to a zone of its own by CNAME.
   #
   certs:
-    image: goacme/lego:5.3.1
+    image: goacme/lego:latest
     restart: unless-stopped
-  #
+    #
     # lego is a one-shot command, so the loop is here. `run` obtains a certificate
     # or renews one due within --renew-days, and does nothing otherwise; running it
     # twice a day leaves plenty of room for a failed attempt to be retried long
     # before expiry.
+    #
+    # A failed attempt retries in five minutes rather than waiting out the twelve,
+    # because the first attempt is the one that fails: credentials, provider name,
+    # zone. Half a day per correction makes getting it right a two-day job.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -u
         while true; do
-          /lego run --renew-days 30 || echo "lego: attempt failed, retrying later"
-          # relais runs as UID 65532 and lego writes the key 0600 as root, so
-          # without this the gateway cannot read what was just renewed — and the
-          # failure would be a permission error at startup, not here.
-          chown -R 65532:65532 /certs 2>/dev/null || true
-          sleep 12h
+          if /lego run --renew-days 30; then
+            # relais runs as UID 65532 and lego writes the key 0600 as root, so
+            # without this the gateway cannot read what was just renewed — and the
+            # failure would be a permission error at startup, not here.
+            chown -R 65532:65532 /certs 2>/dev/null || true
+            sleep 12h
+          else
+            echo "certs: attempt failed, retrying in 5 minutes"
+            sleep 300
+          fi
         done
-  #
+    #
     environment:
       # Read by lego directly; no flags needed for any of these.
       - LEGO_PATH=/certs
@@ -335,29 +343,49 @@ services:
       # `docker run --rm goacme/lego dnshelp -c <provider>` lists the exact variables
       # each one expects.
       - LEGO_DNS=${LEGO_DNS_PROVIDER:?}
-  #
+      #
+      # Which resolvers lego consults to confirm its TXT record is visible before
+      # asking the CA to look. Not how the record is created — that is the provider
+      # API above — and not what the CA itself queries: purely lego's own pre-check.
+      #
+      # It has to be set, because the default is the container's resolver, and under
+      # Compose that is Docker's stub at 127.0.0.11 forwarding to the host's. lego
+      # queries the challenge name the moment it creates it, that first query answers
+      # NXDOMAIN, and a resolver caches the negative answer for the zone's negative
+      # TTL — 1800s on Cloudflare, far longer than lego waits. Every later poll then
+      # reads that cache, so the attempt fails identically forever:
+      #   recursive nameservers: NS 127.0.0.11:53 returned NXDOMAIN for
+      #   _acme-challenge.<your domain>
+      # Naming public resolvers takes both the stub and the host's cache out of the
+      # path. Cloudflare's resolver is first because zones hosted there see their own
+      # records immediately.
+      - LEGO_DNS_RESOLVERS=${LEGO_DNS_RESOLVERS:-1.1.1.1:53,8.8.8.8:53}
+      #
+      # Should the check still time out — a provider that publishes slowly, a split
+      # or delegated zone — uncomment this to keep only the authoritative check. That
+      # one queries your zone's nameservers directly, so no cache can defeat it, and
+      # it is the check that actually says the record is published.
+      # - LEGO_DNS_PROPAGATION_DISABLE_RNS=true
+      #
       # Your provider's credentials. Replace these two with whatever `dnshelp` named
       # for your provider — this pair is Cloudflare's scoped-token form.
       - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN:-}
       - CLOUDFLARE_ZONE_API_TOKEN=${CLOUDFLARE_ZONE_API_TOKEN:-}
-  #
-      # Uncomment to rehearse against Let's Encrypt's staging CA first. Its rate
-      # limits are generous and its certificates are untrusted, which is exactly what
-      # you want while getting the DNS credentials right.
-      # - LEGO_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
-  #
+    #
+    # Uncomment to rehearse against Let's Encrypt's staging CA first. Its rate
+    # limits are generous and its certificates are untrusted, which is exactly what
+    # you want while getting the DNS credentials right.
+    # - LEGO_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+    #
     volumes:
       # Holds the ACME account key as well as the certificates. Losing it means
       # registering a new account, so it is a volume rather than a bind mount.
       - certs:/certs
-  #
+    #
     healthcheck:
       # Healthy once a certificate exists, which is what the gateway waits for.
       test:
-        [
-          "CMD-SHELL",
-          "test -s /certs/certificates/$${RELAIS_SMTP_DOMAIN}.crt"
-        ]
+        ["CMD-SHELL", "test -s /certs/certificates/$${RELAIS_SMTP_DOMAIN}.crt"]
       interval: 30s
       timeout: 5s
       retries: 40

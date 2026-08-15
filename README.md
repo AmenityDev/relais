@@ -162,16 +162,16 @@ The contract follows Resend's for familiarity, without claiming strict compatibi
 `to`, `cc`, `bcc` and `reply_to` each accept either a string or an array. **No `Bcc`
 header is ever written**: blind recipients travel in the envelope only.
 
-| Status | Meaning |
-| --- | --- |
-| 202 | accepted and queued |
-| 200 | replay of an `Idempotency-Key` — **nothing was sent again** |
-| 400 | invalid JSON, or an unknown field (a typo is never silently ignored) |
-| 401 | authentication failed (no detail: see the logs) |
-| 403 | the credential may not use that `From` |
-| 413 | body or message over the configured limit |
-| 422 | validation: bad recipient, missing body, unconfigured domain… |
-| 429 | rate limit exceeded (with `Retry-After`) |
+| Status | Meaning                                                              |
+| ------ | -------------------------------------------------------------------- |
+| 202    | accepted and queued                                                  |
+| 200    | replay of an `Idempotency-Key` — **nothing was sent again**          |
+| 400    | invalid JSON, or an unknown field (a typo is never silently ignored) |
+| 401    | authentication failed (no detail: see the logs)                      |
+| 403    | the credential may not use that `From`                               |
+| 413    | body or message over the configured limit                            |
+| 422    | validation: bad recipient, missing body, unconfigured domain…        |
+| 429    | rate limit exceeded (with `Retry-After`)                             |
 
 Errors all share one shape, with a stable code — the same vocabulary the logs and the
 database use:
@@ -214,12 +214,12 @@ which makes a client's own log correlatable with a relais message.
 
 Four shapes, and nothing else:
 
-| Pattern | Allows |
-| --- | --- |
-| `no-reply@app.example.com` | that exact address |
-| `*@example.com` | any local part, on that exact domain |
-| `no-reply@*.example.com` | that local part, on any subdomain |
-| `*@*.example.com` | any local part, on any subdomain |
+| Pattern                    | Allows                               |
+| -------------------------- | ------------------------------------ |
+| `no-reply@app.example.com` | that exact address                   |
+| `*@example.com`            | any local part, on that exact domain |
+| `no-reply@*.example.com`   | that local part, on any subdomain    |
+| `*@*.example.com`          | any local part, on any subdomain     |
 
 `*.example.com` does **not** cover `example.com`. Covering both takes two patterns,
 deliberately: a wildcard should never reach further than what was written.
@@ -242,12 +242,12 @@ exposure becomes a network decision rather than a routing rule nobody must get w
 Beyond CRUD on relays, domains, credentials and patterns, four dry-run endpoints exist
 because they are what make the interface useful rather than merely functional:
 
-| Endpoint | Answers |
-| --- | --- |
-| `POST /admin/v1/patterns:validate` | is this pattern valid, and what is its canonical form? |
+| Endpoint                                        | Answers                                                                                 |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `POST /admin/v1/patterns:validate`              | is this pattern valid, and what is its canonical form?                                  |
 | `POST /admin/v1/credentials/{id}/patterns:test` | would this credential be allowed to send as this address, and does any domain route it? |
-| `GET /admin/v1/domains:resolve?sender=` | which relay would carry this sender's mail? |
-| `POST /admin/v1/backends/{id}:test` | do these relay credentials actually work? (connects and authenticates, sends nothing) |
+| `GET /admin/v1/domains:resolve?sender=`         | which relay would carry this sender's mail?                                             |
+| `POST /admin/v1/backends/{id}:test`             | do these relay credentials actually work? (connects and authenticates, sends nothing)   |
 
 The first two exist so nothing outside Go reimplements the pattern grammar. A copy
 would drift, and the day it drifts the interface misreports what a credential may send
@@ -314,11 +314,16 @@ Two sources, exactly one at a time:
   renewal caught half-written, or a file briefly unreadable, resolves itself on the
   next pass rather than being skipped until expiry.
 
-  For the ACME side, [deploy/coolify/docker-compose.yaml](deploy/coolify/docker-compose.yaml)
+  For the ACME side, [deploy/coolify/docker-compose.smtp.yaml](deploy/coolify/docker-compose.smtp.yaml)
   carries a ready-made `lego` sidecar using the DNS-01 challenge. DNS-01 because
   HTTP-01 needs port 80 and TLS-ALPN-01 needs 443, both of which belong to the
   platform's proxy — and because it works for a hostname that serves no HTTP at all,
   which is the normal case for a name dedicated to mail.
+
+  One setting there is not optional: `LEGO_DNS_RESOLVERS`. Left to the default, lego
+  checks its own challenge record through the container's resolver — Docker's stub —
+  and a negative answer cached before the record appeared makes every attempt fail
+  identically until the cache expires. The file explains it where it is set.
 - `RELAIS_TLS_SELF_SIGNED=true` — tests and development. A certificate is generated at
   startup, its SHA-256 fingerprint logged so a client can pin it, and it is **refused
   when `RELAIS_ENV=prod`** unless explicitly overridden.
@@ -330,10 +335,10 @@ Two sources, exactly one at a time:
 CI publishes two images to GHCR once every check has passed — lint, the suite with the
 race detector, the fuzz targets, the frontend checks and both image builds:
 
-| Image | Contents | Ports |
-| --- | --- | --- |
-| `ghcr.io/amenitydev/relais` | the gateway: sending API, submission server, workers | 8080 sending, 8081 admin, 2525 submission |
-| `ghcr.io/amenitydev/relais-web` | the admin interface | 3000 |
+| Image                           | Contents                                             | Ports                                     |
+| ------------------------------- | ---------------------------------------------------- | ----------------------------------------- |
+| `ghcr.io/amenitydev/relais`     | the gateway: sending API, submission server, workers | 8080 sending, 8081 admin, 2525 submission |
+| `ghcr.io/amenitydev/relais-web` | the admin interface                                  | 3000                                      |
 
 Both are `linux/amd64` and `linux/arm64` and run as a non-root user; the gateway image
 has no shell.
@@ -353,9 +358,9 @@ its source.
 Two ready-made stacks for Coolify, differing only in whether SMTP submission is part
 of them:
 
-| File | What it deploys |
-| --- | --- |
-| [deploy/coolify/docker-compose.yaml](deploy/coolify/docker-compose.yaml) | the sending API and the admin interface |
+| File                                                                               | What it deploys                                                                                              |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| [deploy/coolify/docker-compose.yaml](deploy/coolify/docker-compose.yaml)           | the sending API and the admin interface                                                                      |
 | [deploy/coolify/docker-compose.smtp.yaml](deploy/coolify/docker-compose.smtp.yaml) | the same, plus SMTP submission and a `lego` sidecar that obtains and renews its certificate over ACME DNS-01 |
 
 Both use an external Postgres and run the migrations in a one-shot container before
