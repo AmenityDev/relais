@@ -69,6 +69,12 @@ jobs:
           go run ./cmd/relais openapi -surface admin -check docs/openapi-admin.json
           go run ./cmd/relais openapi -surface public -check docs/openapi-public.json
 
+      - name: The two Coolify compose files agree
+        # deploy/coolify/ holds the same stack twice, with and without SMTP. A change
+        # to the shared parts belongs in both, and nothing else would notice if it
+        # landed in only one.
+        run: python3 scripts/check-compose-variants.py
+
       - name: Generated query layer matches the queries
         # Catches the case where someone edits a .sql file and forgets to
         # regenerate: the committed Go would silently keep the old query.

@@ -350,12 +350,18 @@ its source.
 
 ### Running them
 
-A ready-made stack for Coolify is in
-[deploy/coolify/docker-compose.yaml](deploy/coolify/docker-compose.yaml): the two
-services, an external Postgres, and a one-shot container that applies the migrations
-before the gateway starts. It uses Coolify's magic variables so the interface's domain
-and its `RELAIS_WEB_ORIGIN` cannot disagree, and so the issuer is one value shared by
-both halves.
+Two ready-made stacks for Coolify, differing only in whether SMTP submission is part
+of them:
+
+| File | What it deploys |
+| --- | --- |
+| [deploy/coolify/docker-compose.yaml](deploy/coolify/docker-compose.yaml) | the sending API and the admin interface |
+| [deploy/coolify/docker-compose.smtp.yaml](deploy/coolify/docker-compose.smtp.yaml) | the same, plus SMTP submission and a `lego` sidecar that obtains and renews its certificate over ACME DNS-01 |
+
+Both use an external Postgres and run the migrations in a one-shot container before
+the gateway starts. Both use Coolify's magic variables, so the interface's domain and
+its `RELAIS_WEB_ORIGIN` cannot disagree, and the OIDC issuer is one value shared by
+both halves. `task lint` checks that the two files have not drifted apart.
 
 Otherwise there is nothing platform-specific to know. Both images are configured entirely
 through the environment and neither reads a config file. Postgres is external; any

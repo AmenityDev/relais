@@ -1,0 +1,367 @@
+# relais on Coolify, with SMTP submission.
+#
+# This is docker-compose.yaml plus everything submission needs: the listener, a
+# published port, and a sidecar that obtains and renews the certificate over ACME
+# DNS-01. Use the other file if your applications all speak HTTP — it needs no
+# certificate, no DNS credentials, and no published port.
+#
+# Postgres is NOT part of this stack: point RELAIS_DB_URL at your existing server.
+#
+# Written to Coolify's compose conventions
+# (https://coolify.io/docs/knowledge-base/docker/compose):
+#
+#   - No `ports:` anywhere. Publishing a port bypasses Coolify's proxy and puts the
+#     service on the host directly; a domain routes through the proxy instead, which
+#     is what terminates TLS and sets the forwarded headers. Two services get a
+#     domain — the interface and the sending API — and the admin API deliberately
+#     does not. SMTP submission is the exception: it needs a published port, since
+#     Coolify's proxy carries HTTP and not SMTP.
+#   - `SERVICE_URL_WEB_3000` is a magic variable: declared as a bare entry, Coolify
+#     generates the domain, points the proxy at port 3000, and exposes the full URL
+#     as ${SERVICE_URL_WEB}.
+#   - `${VAR:?}` marks a variable as required. Coolify lists those first, outlines
+#     them in red while empty, and refuses to deploy until they are filled.
+#   - Coolify adds its own labels, network and proxy wiring. Nothing here does.
+#
+# `exclude_from_hc` on the migration service is a Coolify extension, so plain
+# `docker compose config` rejects this file with "additional properties not allowed".
+# That is expected: Coolify's parser accepts it, and everything else here validates.
+# Delete that one line if you want to run the file with vanilla Compose.
+#
+# Service names carry no hyphen on purpose. A magic variable's identifier is derived
+# from the service name, and Coolify does not document how a hyphen in that name is
+# transformed — so `web` avoids a guess that would silently fail to produce a domain.
+
+services:
+  # ------------------------------------------------------------------ migrations
+  # Migrations are never implicit in `serve`, so they are their own container that
+  # runs to completion before the gateway starts. This keeps the guarantee — nothing
+  # migrates a database as a side effect of serving traffic — while making a deploy
+  # one action instead of two.
+  #
+  # If you would rather drive it yourself, delete this service and the depends_on
+  # below, and set Coolify's pre-deployment command to `relais migrate up`.
+  migrate:
+    image: ghcr.io/amenitydev/relais:main
+    command: ["migrate", "up"]
+    restart: "no"
+    # A container that exits on purpose is not unhealthy. Without this, Coolify
+    # reports the whole stack as degraded once the migration succeeds.
+    exclude_from_hc: true
+    environment:
+      - RELAIS_DB_URL=${RELAIS_DB_URL:?}
+      # migrate reads no secrets, but the process validates its configuration as a
+      # whole, so the two it always requires have to be present.
+      - RELAIS_SECRET_ENCRYPTION_KEYS=${RELAIS_SECRET_ENCRYPTION_KEYS:?}
+      - RELAIS_SECRET_CREDENTIAL_PEPPER=${SERVICE_PASSWORD_64_PEPPER}
+      - RELAIS_ENV=${RELAIS_ENV:-prod}
+      - RELAIS_OBS_LOG_FORMAT=json
+      # The submission server is not started by `migrate`, and leaving it on would
+      # make this container demand a TLS certificate it has no use for.
+      - RELAIS_SMTP_ENABLED=false
+
+  # ---------------------------------------------------------------- the gateway
+  relais:
+    image: ghcr.io/amenitydev/relais:main
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      # Waits for the first certificate. Without it the very first deployment
+      # crash-loops for the few minutes lego needs, since the submission server
+      # refuses to start without one.
+      certs:
+        condition: service_healthy
+
+    # The sending API gets a domain through the proxy, because each application lives
+    # in its own Coolify stack with its own network — and some run on other servers
+    # entirely. There is no shared internal name for them to dial, so http://relais:8080
+    # is reachable only from this stack, which is not where the callers are.
+    #
+    # Still no `ports:`. Publishing one would bypass the proxy and put the API on the
+    # host directly; the domain below routes through it, which is what terminates TLS
+    # and sets the forwarded headers.
+    #
+    # The admin API on 8081 stays unexposed, and that is the separation earning its
+    # keep: the sending API being public says nothing about the admin API, because they
+    # are different listeners and /admin/v1 answers 404 on 8080.
+    #
+    # For SMTP submission, see RELAIS_SMTP_ENABLED further down.
+
+    environment:
+      # --- exposure -------------------------------------------------------------
+      # Magic variable, declared bare: Coolify generates a domain for this service and
+      # points its proxy at port 8080. Replace it with your own hostname in the UI —
+      # that is the address your applications will use as the API base URL.
+      #
+      # relais never reads this value: nothing generates links, and a Message-ID is
+      # built from the sender's domain. It is here to create the route, not to inform
+      # the application.
+      - SERVICE_URL_RELAIS_8080
+
+      # --- required -------------------------------------------------------------
+      # Your existing Postgres. Any standard DSN, including one pointing at a
+      # pooler; relais makes no assumption about the topology. sslmode=require is
+      # worth it whenever the database is not on this host.
+      - RELAIS_DB_URL=${RELAIS_DB_URL:?}
+
+      # The keyring that seals relay passwords: "1:<base64 32 bytes>". Generate with
+      # `relais keygen key`. Not a Coolify-generated value, because the format is
+      # id:key — a bare random string would be rejected at startup — and because a
+      # keyring is meant to be rotated deliberately, with `relais backend rewrap`.
+      - RELAIS_SECRET_ENCRYPTION_KEYS=${RELAIS_SECRET_ENCRYPTION_KEYS:?}
+
+      # The pepper mixed into every credential fingerprint. Coolify generates and
+      # keeps this one: any non-empty string works, and a generated 64-character
+      # value is stronger than most chosen ones.
+      #
+      # NEVER change it afterwards. The pepper cannot be rotated: changing it makes
+      # every existing API key and SMTP password stop authenticating, and the only
+      # symptom is that every application starts getting 401s at once.
+      - RELAIS_SECRET_CREDENTIAL_PEPPER=${SERVICE_PASSWORD_64_PEPPER}
+
+      # --- admin authentication -------------------------------------------------
+      # The OIDC issuer, exactly as it appears in the `iss` claim of the tokens your
+      # provider issues. Examples:
+      #   Keycloak   https://auth.example.com/realms/relais
+      #   Authentik  https://auth.example.com/application/o/relais/
+      #
+      # The interface below reads the SAME variable. That is deliberate: the two
+      # halves deal in the same claim, and a mismatch means relais rejects every
+      # token the interface obtains, with an error that names neither side.
+      - RELAIS_OIDC_ISSUER=${RELAIS_OIDC_ISSUER:?}
+      # An issuer without an expected audience accepts tokens minted for other
+      # clients, so relais requires both.
+      - RELAIS_OIDC_AUDIENCE=${RELAIS_OIDC_AUDIENCE:?}
+      - RELAIS_OIDC_GROUPS_CLAIM=${RELAIS_OIDC_GROUPS_CLAIM:-groups}
+      - RELAIS_OIDC_ADMIN_GROUP=${RELAIS_OIDC_ADMIN_GROUP:-relais-admin}
+      - RELAIS_OIDC_VIEWER_GROUP=${RELAIS_OIDC_VIEWER_GROUP:-relais-viewer}
+
+      # --- SMTP submission ------------------------------------------------------
+      # Off by default, and this is the one setting worth reading before deploying.
+      #
+      # The submission server requires a real certificate: it refuses to advertise
+      # AUTH on a plaintext connection, and a self-signed certificate is refused
+      # outright when RELAIS_ENV is prod. With submission enabled and no certificate,
+      # the process will not start at all.
+      #
+      # The submission server. It requires a real certificate — AUTH is never
+      # advertised on a plaintext connection, and a self-signed certificate is refused
+      # outright when RELAIS_ENV is prod — which is what the certs service below
+      # provides.
+      #
+      # RELAIS_SMTP_DOMAIN is the hostname your clients will connect to, and therefore
+      # the name the certificate must carry. It is required here rather than defaulted,
+      # because a certificate issued for a name nobody dials is a silent failure.
+      #
+      # A renewal is picked up without a restart: relais watches the files and swaps
+      # the certificate in on the next handshake. A failed reload keeps the previous
+      # certificate serving rather than dropping the listener.
+      - RELAIS_SMTP_ENABLED=${RELAIS_SMTP_ENABLED:-true}
+      - RELAIS_SMTP_ADDR=:2525
+      - RELAIS_SMTP_DOMAIN=${RELAIS_SMTP_DOMAIN:?}
+      # lego writes to $LEGO_PATH/certificates/<domain>.{crt,key}. Both paths are
+      # built from RELAIS_SMTP_DOMAIN, the same variable the certs service is given,
+      # so the certificate relais opens is necessarily the one lego renews.
+      - RELAIS_TLS_CERT_FILE=/certs/certificates/${RELAIS_SMTP_DOMAIN}.crt
+      - RELAIS_TLS_KEY_FILE=/certs/certificates/${RELAIS_SMTP_DOMAIN}.key
+      # How often the files are checked for a renewal. 30s is the default; the check
+      # is two stats.
+      - RELAIS_TLS_WATCH_INTERVAL=${RELAIS_TLS_WATCH_INTERVAL:-30s}
+
+      # --- operational ----------------------------------------------------------
+      - RELAIS_ENV=${RELAIS_ENV:-prod}
+      - RELAIS_OBS_LOG_FORMAT=json
+      - RELAIS_OBS_LOG_LEVEL=${RELAIS_OBS_LOG_LEVEL:-info}
+      # An OTLP/HTTP collector base URL, e.g. http://clickstack:4318. Empty keeps
+      # logging to stdout only, which Coolify captures.
+      - RELAIS_OBS_OTLP_ENDPOINT=${RELAIS_OBS_OTLP_ENDPOINT:-}
+      - RELAIS_OBS_OTLP_HEADERS=${RELAIS_OBS_OTLP_HEADERS:-}
+
+      # Required here, because every submission now arrives through Coolify's proxy:
+      # the socket peer is Traefik, so without this every rejected submission would be
+      # recorded against the proxy's address instead of the client's — losing precisely
+      # the context that makes a compromised credential investigable.
+      #
+      # It is trusted only because nothing but the proxy can reach this container: no
+      # port is published, so there is no path that bypasses it and could forge the
+      # header. Empty it if you ever put relais somewhere directly reachable.
+      - RELAIS_HTTP_TRUSTED_PROXY_HEADER=${RELAIS_HTTP_TRUSTED_PROXY_HEADER:-X-Forwarded-For}
+
+      # The admin listener's port, shared with the interface below so the two cannot
+      # disagree. It is separate from the sending API on 8080 by design (F11): the
+      # sending listener serves /v1 only and answers 404 on /admin/v1, so publishing
+      # one cannot expose the other.
+      - RELAIS_ADMIN_ADDR=:${RELAIS_ADMIN_PORT:-8081}
+
+      - RELAIS_WORKER_COUNT=${RELAIS_WORKER_COUNT:-5}
+      - RELAIS_LIMITS_MAX_MESSAGE_BYTES=${RELAIS_LIMITS_MAX_MESSAGE_BYTES:-10485760}
+
+      # Per-credential rate limits, which matter more now that the API faces the
+      # internet. The defaults are 10/s with a burst of 20; raise them per credential
+      # in the interface rather than globally if one application legitimately sends
+      # faster. Note that the limiter is per process, which is documented and
+      # deliberate for a single-instance deployment — two replicas mean two budgets.
+      - RELAIS_RATELIMIT_RPS=${RELAIS_RATELIMIT_RPS:-10}
+      - RELAIS_RATELIMIT_BURST=${RELAIS_RATELIMIT_BURST:-20}
+
+    # 587 outside, unprivileged 2525 inside, so the container needs no
+    # CAP_NET_BIND_SERVICE. This is the one port published here: everything else goes
+    # through Coolify's proxy, which does not speak SMTP.
+    ports:
+      - "587:2525"
+
+    # Read-only: relais never writes a certificate, and the renewer has no business
+    # being able to read anything else of relais's.
+    volumes:
+      - certs:/certs:ro
+
+    healthcheck:
+      # The image carries no shell, so this is the binary's own subcommand probing
+      # its readiness endpoint — which reports on the database too.
+      test: ["CMD", "relais", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ------------------------------------------------------------- admin interface
+  web:
+    image: ghcr.io/amenitydev/relais-web:main
+    depends_on:
+      relais:
+        condition: service_healthy
+
+    environment:
+      # Magic variable, declared bare: Coolify generates a domain for this service,
+      # points its proxy at port 3000, and makes the resulting URL available as
+      # ${SERVICE_URL_WEB} below. Replace it with your own domain in the Coolify UI.
+      - SERVICE_URL_WEB_3000
+
+      # The interface's own public origin. Derived from the URL Coolify just
+      # generated rather than configured separately: the image also builds
+      # adapter-node's CSRF origin and the OIDC redirect URI from this value, and two
+      # variables that must agree are one variable. Get it wrong and navigation keeps
+      # working while every write is refused as cross-site.
+      - RELAIS_WEB_ORIGIN=${SERVICE_URL_WEB}
+
+      # The admin API, on the stack's internal network — port 8081, not the 8080 the
+      # sending API listens on. They are different listeners serving disjoint routes:
+      # /admin/v1 on 8080 answers 404, which is what makes exposing one harmless to
+      # the other.
+      #
+      # The port comes from the same variable the gateway uses, so changing it changes
+      # both. This must never be a public URL: no token ever reaches the browser, so
+      # nothing outside this container needs to reach the admin API at all.
+      - RELAIS_WEB_API_URL=http://relais:${RELAIS_ADMIN_PORT:-8081}
+
+      # The same issuer as the gateway above, from the same variable. The endpoints
+      # are discovered from it, so there is no second URL to configure.
+      - RELAIS_WEB_OIDC_ISSUER=${RELAIS_OIDC_ISSUER:?}
+      - RELAIS_WEB_OIDC_CLIENT_ID=${RELAIS_WEB_OIDC_CLIENT_ID:?}
+      - RELAIS_WEB_OIDC_CLIENT_SECRET=${RELAIS_WEB_OIDC_CLIENT_SECRET:?}
+      # Add offline_access, or the provider issues no refresh token and sessions end
+      # abruptly whenever the short-lived access token expires.
+      - RELAIS_WEB_OIDC_SCOPES=${RELAIS_WEB_OIDC_SCOPES:-openid profile email offline_access}
+
+      # 32 bytes, base64, encrypting the session cookie. Generate with:
+      #   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+      #
+      # Not a Coolify-generated value: the image validates that this decodes to
+      # exactly 32 bytes, and the generators' output length is not documented well
+      # enough to rely on. Changing it signs everyone out, which is all it does.
+      - RELAIS_WEB_SESSION_KEY=${RELAIS_WEB_SESSION_KEY:?}
+
+      # A URL template for searching your log store, with {query} where the terms go,
+      # e.g. https://hyperdx.example.com/search?q={query}. Empty renders no log links
+      # rather than dead ones.
+      - RELAIS_WEB_LOGS_URL=${RELAIS_WEB_LOGS_URL:-}
+
+    healthcheck:
+      # /healthz answers only once configuration has been validated: the container
+      # refuses to start when it is wrong, so a healthy container can actually serve.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # --------------------------------------------------- certificates for SMTP
+  # Obtains and renews the certificate for RELAIS_SMTP_DOMAIN over ACME DNS-01.
+  #
+  # DNS-01 rather than HTTP-01, for one reason that matters here: HTTP-01 needs port
+  # 80 and TLS-ALPN-01 needs 443, and both belong to Coolify's proxy. DNS-01 needs no
+  # inbound port at all, and works for a hostname that serves no HTTP — which is the
+  # normal case for a name dedicated to mail.
+  #
+  # The cost is a DNS API token. It can create records in the zone, so scope it to
+  # the zone you use, or delegate _acme-challenge to a zone of its own by CNAME.
+  #
+  certs:
+    image: goacme/lego:5.3.1
+    restart: unless-stopped
+  #
+    # lego is a one-shot command, so the loop is here. `run` obtains a certificate
+    # or renews one due within --renew-days, and does nothing otherwise; running it
+    # twice a day leaves plenty of room for a failed attempt to be retried long
+    # before expiry.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -u
+        while true; do
+          /lego run --renew-days 30 || echo "lego: attempt failed, retrying later"
+          # relais runs as UID 65532 and lego writes the key 0600 as root, so
+          # without this the gateway cannot read what was just renewed — and the
+          # failure would be a permission error at startup, not here.
+          chown -R 65532:65532 /certs 2>/dev/null || true
+          sleep 12h
+        done
+  #
+    environment:
+      # Read by lego directly; no flags needed for any of these.
+      - LEGO_PATH=/certs
+      - LEGO_ACCEPT_TOS=true
+      - LEGO_EMAIL=${ACME_EMAIL:?}
+      # The same hostname the gateway announces and your clients connect to. One
+      # variable, so the certificate cannot be issued for a name nobody dials.
+      - LEGO_DOMAINS=${RELAIS_SMTP_DOMAIN:?}
+      # The provider shortcode: cloudflare, ovh, gandiv5, route53, hetzner, scaleway…
+      # `docker run --rm goacme/lego dnshelp -c <provider>` lists the exact variables
+      # each one expects.
+      - LEGO_DNS=${LEGO_DNS_PROVIDER:?}
+  #
+      # Your provider's credentials. Replace these two with whatever `dnshelp` named
+      # for your provider — this pair is Cloudflare's scoped-token form.
+      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN:-}
+      - CLOUDFLARE_ZONE_API_TOKEN=${CLOUDFLARE_ZONE_API_TOKEN:-}
+  #
+      # Uncomment to rehearse against Let's Encrypt's staging CA first. Its rate
+      # limits are generous and its certificates are untrusted, which is exactly what
+      # you want while getting the DNS credentials right.
+      # - LEGO_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+  #
+    volumes:
+      # Holds the ACME account key as well as the certificates. Losing it means
+      # registering a new account, so it is a volume rather than a bind mount.
+      - certs:/certs
+  #
+    healthcheck:
+      # Healthy once a certificate exists, which is what the gateway waits for.
+      test:
+        [
+          "CMD-SHELL",
+          "test -s /certs/certificates/$${RELAIS_SMTP_DOMAIN}.crt"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+
+volumes:
+  certs:

@@ -132,6 +132,7 @@ tasks:
       - go mod tidy -diff
       - go run ./cmd/relais openapi -surface admin -check docs/openapi-admin.json
       - go run ./cmd/relais openapi -surface public -check docs/openapi-public.json
+      - python3 scripts/check-compose-variants.py
 
   openapi:
     desc: Regenerate the OpenAPI documents from the Go types
