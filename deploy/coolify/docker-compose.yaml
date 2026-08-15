@@ -62,6 +62,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Uncomment with the certs service. It waits for the first certificate:
+      # without it the very first deployment crash-loops for the few minutes lego
+      # needs, since the submission server refuses to start without one.
+      # certs:
+      #   condition: service_healthy
 
     # The sending API gets a domain through the proxy, because each application lives
     # in its own Coolify stack with its own network — and some run on other servers
@@ -137,20 +142,30 @@ services:
       #
       # The REST API needs none of this and is fully functional without it. Enable
       # submission only for applications that cannot speak HTTP — WordPress, legacy
-      # scripts — and when you do:
+      # scripts. To turn it on, do all four:
       #
-      #   1. set RELAIS_SMTP_ENABLED=true
-      #   2. mount a certificate and set RELAIS_TLS_CERT_FILE / RELAIS_TLS_KEY_FILE
-      #   3. uncomment the `ports:` block below, because Coolify's HTTP proxy does
-      #      not carry SMTP
+      #   1. set RELAIS_SMTP_ENABLED=true and RELAIS_SMTP_DOMAIN to the hostname your
+      #      clients will connect to, which is the name the certificate must carry
+      #   2. uncomment the `certs` service at the bottom of this file and give it your
+      #      DNS provider's credentials
+      #   3. uncomment the two TLS paths and the volume below
+      #   4. uncomment the `ports:` block, because Coolify's HTTP proxy does not carry
+      #      SMTP
       #
-      # SIGHUP reloads the certificate after a renewal with no downtime, and a failed
-      # reload keeps the previous one serving.
+      # A renewal is picked up without a restart: relais watches the files and swaps
+      # the certificate in on the next handshake. A failed reload keeps the previous
+      # certificate serving rather than dropping the listener.
       - RELAIS_SMTP_ENABLED=${RELAIS_SMTP_ENABLED:-false}
       - RELAIS_SMTP_ADDR=:2525
       - RELAIS_SMTP_DOMAIN=${RELAIS_SMTP_DOMAIN:-}
-      - RELAIS_TLS_CERT_FILE=${RELAIS_TLS_CERT_FILE:-}
-      - RELAIS_TLS_KEY_FILE=${RELAIS_TLS_KEY_FILE:-}
+      # lego writes to $LEGO_PATH/certificates/<domain>.{crt,key}. Both paths are
+      # built from RELAIS_SMTP_DOMAIN, the same variable lego is given, so the
+      # certificate relais opens is necessarily the one lego renews.
+      # - RELAIS_TLS_CERT_FILE=/certs/certificates/${RELAIS_SMTP_DOMAIN}.crt
+      # - RELAIS_TLS_KEY_FILE=/certs/certificates/${RELAIS_SMTP_DOMAIN}.key
+      # How often the files are checked for a renewal. 30s is the default; the check
+      # is two stats.
+      - RELAIS_TLS_WATCH_INTERVAL=${RELAIS_TLS_WATCH_INTERVAL:-30s}
 
       # --- operational ----------------------------------------------------------
       - RELAIS_ENV=${RELAIS_ENV:-prod}
@@ -192,6 +207,11 @@ services:
     # 2525 inside, so the container needs no CAP_NET_BIND_SERVICE.
     # ports:
     #   - "587:2525"
+
+    # Read-only: relais never writes a certificate, and the renewer has no business
+    # being able to read anything else of relais's.
+    # volumes:
+    #   - certs:/certs:ro
 
     healthcheck:
       # The image carries no shell, so this is the binary's own subcommand probing
@@ -268,3 +288,79 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # --------------------------------------------------- certificates for SMTP
+  # Uncomment this whole service to enable SMTP submission. It obtains and renews a
+  # certificate for RELAIS_SMTP_DOMAIN with the ACME DNS-01 challenge.
+  #
+  # DNS-01 rather than HTTP-01, for one reason that matters here: HTTP-01 needs port
+  # 80 and TLS-ALPN-01 needs 443, and both belong to Coolify's proxy. DNS-01 needs no
+  # inbound port at all, and works for a hostname that serves no HTTP — which is the
+  # normal case for a name dedicated to mail.
+  #
+  # The cost is a DNS API token. It can create records in the zone, so scope it to
+  # the zone you use, or delegate _acme-challenge to a zone of its own by CNAME.
+  #
+  # certs:
+  #   image: goacme/lego:5.3.1
+  #   restart: unless-stopped
+  #
+  #   # lego is a one-shot command, so the loop is here. `run` obtains a certificate
+  #   # or renews one due within --renew-days, and does nothing otherwise; running it
+  #   # twice a day leaves plenty of room for a failed attempt to be retried long
+  #   # before expiry.
+  #   entrypoint: ["/bin/sh", "-c"]
+  #   command:
+  #     - |
+  #       set -u
+  #       while true; do
+  #         /lego run --renew-days 30 || echo "lego: attempt failed, retrying later"
+  #         # relais runs as UID 65532 and lego writes the key 0600 as root, so
+  #         # without this the gateway cannot read what was just renewed — and the
+  #         # failure would be a permission error at startup, not here.
+  #         chown -R 65532:65532 /certs 2>/dev/null || true
+  #         sleep 12h
+  #       done
+  #
+  #   environment:
+  #     # Read by lego directly; no flags needed for any of these.
+  #     - LEGO_PATH=/certs
+  #     - LEGO_ACCEPT_TOS=true
+  #     - LEGO_EMAIL=${ACME_EMAIL:?}
+  #     # The same hostname the gateway announces and your clients connect to. One
+  #     # variable, so the certificate cannot be issued for a name nobody dials.
+  #     - LEGO_DOMAINS=${RELAIS_SMTP_DOMAIN:?}
+  #     # The provider shortcode: cloudflare, ovh, gandiv5, route53, hetzner, scaleway…
+  #     # `docker run --rm goacme/lego dnshelp -c <provider>` lists the exact variables
+  #     # each one expects.
+  #     - LEGO_DNS=${LEGO_DNS_PROVIDER:?}
+  #
+  #     # Your provider's credentials. Replace these two with whatever `dnshelp` named
+  #     # for your provider — this pair is Cloudflare's scoped-token form.
+  #     - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN:-}
+  #     - CLOUDFLARE_ZONE_API_TOKEN=${CLOUDFLARE_ZONE_API_TOKEN:-}
+  #
+  #     # Uncomment to rehearse against Let's Encrypt's staging CA first. Its rate
+  #     # limits are generous and its certificates are untrusted, which is exactly what
+  #     # you want while getting the DNS credentials right.
+  #     # - LEGO_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+  #
+  #   volumes:
+  #     # Holds the ACME account key as well as the certificates. Losing it means
+  #     # registering a new account, so it is a volume rather than a bind mount.
+  #     - certs:/certs
+  #
+  #   healthcheck:
+  #     # Healthy once a certificate exists, which is what the gateway waits for.
+  #     test:
+  #       [
+  #         "CMD-SHELL",
+  #         "test -s /certs/certificates/$${RELAIS_SMTP_DOMAIN}.crt"
+  #       ]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 40
+  #     start_period: 30s
+
+# volumes:
+#   certs:

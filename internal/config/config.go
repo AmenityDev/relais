@@ -137,6 +137,14 @@ type TLS struct {
 	SelfSignedDir string `env:"SELF_SIGNED_DIR"`
 	// MinVersion is the minimum accepted TLS version ("1.2" or "1.3").
 	MinVersion string `env:"MIN_VERSION" envDefault:"1.2"`
+	// WatchInterval is how often the certificate files are checked for a renewal.
+	// Zero disables the check, leaving SIGHUP as the only way to reload.
+	//
+	// Polling exists because the renewer is usually another container, and a
+	// container cannot signal a process in another one without being handed the
+	// Docker socket — which is a far larger privilege than fetching a certificate
+	// deserves. Watching the file removes the need to signal anything.
+	WatchInterval time.Duration `env:"WATCH_INTERVAL" envDefault:"30s"`
 }
 
 // Worker configures the river client embedded in this process.

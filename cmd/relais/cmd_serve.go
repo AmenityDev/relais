@@ -254,6 +254,11 @@ Schema migrations are not applied here; run "relais migrate up" first.
 	// terminates the process by default, so an operator reflexively sending one
 	// would take the service down.
 	group.Go(func() error { return watchCertificateReloads(groupCtx, certs, log) })
+	if certs != nil {
+		// Notices a renewal written by another container. SIGHUP still works and
+		// forces a reload immediately; this makes it optional rather than required.
+		group.Go(func() error { return certs.Watch(groupCtx, cfg.TLS.WatchInterval, log) })
+	}
 
 	// The admin API on its own listener (D15). Exposing the public one must not
 	// expose this one, and a separate port makes that a network decision rather
@@ -370,8 +375,10 @@ Schema migrations are not applied here; run "relais migrate up" first.
 
 // watchCertificateReloads reloads the TLS material on SIGHUP.
 //
-// This is what makes a certbot or Caddy renewal a no-downtime event: the renewal
-// hook sends SIGHUP and the next handshake uses the new certificate.
+// This makes a renewal a no-downtime event when the renewer can signal the
+// process — a hook running on the same host, for instance. When it cannot, which
+// is the usual case for a sidecar container, Provider.Watch notices the change on
+// disk instead.
 //
 // The handler is installed unconditionally, including when there is nothing to
 // reload. Go's default action for SIGHUP is to terminate, so leaving it

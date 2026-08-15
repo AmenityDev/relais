@@ -3,8 +3,9 @@
 // Two sources are supported, and exactly one is chosen by configuration:
 //
 //   - Mounted PEM files, which is how production works. Any tool that writes a
-//     cert to disk fits (certbot, Caddy, cert-manager, a mounted volume), and
-//     Reload picks up a renewal without a restart.
+//     cert to disk fits (certbot, lego, cert-manager, a mounted volume). A renewal
+//     is picked up without a restart: Watch notices the files changed, and SIGHUP
+//     forces it immediately.
 //   - A generated self-signed certificate, for tests and local development.
 //     It is refused in a production environment unless explicitly forced,
 //     because quietly serving an untrusted certificate is worse than not
@@ -15,6 +16,7 @@
 package tlsconf
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -64,8 +66,30 @@ type Provider struct {
 	minVersion uint16
 	load       func() (*tls.Certificate, error)
 
+	// certFile and keyFile are empty unless the source is SourceFiles. Watch uses
+	// them to notice a renewal.
+	certFile string
+	keyFile  string
+
 	mu   sync.RWMutex
 	cert *tls.Certificate
+	// loadedFrom is the state of the files behind the certificate now serving. It
+	// is recorded on a *successful* load only — see ReloadIfChanged.
+	loadedFrom fileState
+}
+
+// fileState is what a renewal changes about a file. Content hashing would be
+// stricter, but a certificate is rewritten rather than edited in place, so the
+// modification time and size move together and cost two stats instead of two
+// reads.
+type fileState struct {
+	certMod  time.Time
+	certSize int64
+	keyMod   time.Time
+	keySize  int64
+	// ok is false when either file could not be stat'd. A renewal in progress can
+	// briefly remove a file, and that is not a state worth recording.
+	ok bool
 }
 
 // New builds a Provider from the configuration.
@@ -84,6 +108,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Provider, error) {
 	case cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "":
 		p.source = SourceFiles
 		certFile, keyFile := cfg.TLS.CertFile, cfg.TLS.KeyFile
+		p.certFile, p.keyFile = certFile, keyFile
 		p.load = func() (*tls.Certificate, error) { return loadFiles(certFile, keyFile) }
 
 	case cfg.TLS.SelfSigned:
@@ -128,14 +153,122 @@ func New(cfg *config.Config, log *slog.Logger) (*Provider, error) {
 // A failed reload leaves the previous certificate in place: a botched renewal
 // must not take the listener down.
 func (p *Provider) Reload() error {
+	// Read the state before loading, not after. A renewal that lands between the
+	// two would otherwise be recorded as already loaded, and Watch would never pick
+	// it up.
+	state := p.statFiles()
+
 	cert, err := p.load()
 	if err != nil {
 		return fmt.Errorf("load %s certificate: %w", p.source, err)
 	}
 	p.mu.Lock()
 	p.cert = cert
+	p.loadedFrom = state
 	p.mu.Unlock()
 	return nil
+}
+
+// statFiles observes the certificate files. os.Stat follows symlinks on purpose:
+// certbot writes into archive/ and repoints a symlink in live/, so watching the
+// link itself would never see a renewal.
+func (p *Provider) statFiles() fileState {
+	if p.source != SourceFiles {
+		return fileState{}
+	}
+	certInfo, certErr := os.Stat(p.certFile)
+	keyInfo, keyErr := os.Stat(p.keyFile)
+	if certErr != nil || keyErr != nil {
+		return fileState{}
+	}
+	return fileState{
+		certMod: certInfo.ModTime(), certSize: certInfo.Size(),
+		keyMod: keyInfo.ModTime(), keySize: keyInfo.Size(),
+		ok: true,
+	}
+}
+
+// ReloadIfChanged reloads when the files on disk differ from those behind the
+// certificate currently serving, and reports whether it did.
+//
+// A failed reload does not record the new state, so the next check tries again.
+// That matters more than it looks: a renewal writes the certificate and the key
+// as two operations, and a check landing between them loads a mismatched pair
+// that fails to parse. Recording the state anyway would skip that renewal
+// permanently, and the expiry would arrive weeks later with nothing in the logs
+// to explain it.
+func (p *Provider) ReloadIfChanged() (bool, error) {
+	if p.source != SourceFiles {
+		return false, nil
+	}
+
+	current := p.statFiles()
+	if !current.ok {
+		// Mid-renewal, or the volume is not mounted yet. Keep serving what we have
+		// and look again next time.
+		return false, nil
+	}
+
+	p.mu.RLock()
+	previous := p.loadedFrom
+	p.mu.RUnlock()
+
+	if previous.ok && current == previous {
+		return false, nil
+	}
+
+	if err := p.Reload(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Watch reloads the certificate when its files change, until ctx is done.
+//
+// Polling rather than inotify, deliberately. certbot and lego both write a new
+// file and move it into place, and some layouts swap a symlink instead: an
+// inotify watch on the configured path stops pointing at the file that changed.
+// A stat every interval costs nothing next to a 90-day certificate.
+//
+// Returns nil when ctx is cancelled, and never returns an error: a renewal that
+// cannot be read is a warning, not a reason to stop serving.
+func (p *Provider) Watch(ctx context.Context, interval time.Duration, log *slog.Logger) error {
+	if p.source != SourceFiles || interval <= 0 {
+		<-ctx.Done()
+		return nil
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Only warn once per run of failures, so a half-written file does not fill the
+	// log every interval until the renewal completes.
+	warned := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			reloaded, err := p.ReloadIfChanged()
+			switch {
+			case err != nil:
+				if !warned && log != nil {
+					log.Warn("tls certificate changed but could not be loaded, keeping the previous one",
+						slog.Any("error", err))
+					warned = true
+				}
+			case reloaded:
+				warned = false
+				if log != nil {
+					log.Info("tls certificate reloaded after a change on disk",
+						slog.String("fingerprint", p.Fingerprint()),
+						slog.Time("not_after", p.NotAfter()),
+					)
+				}
+			}
+		}
+	}
 }
 
 // Source reports where the active certificate came from.

@@ -301,9 +301,24 @@ RELAIS_SECRET_ENCRYPTION_KEYS="2:<new>"    # the old one can go
 Two sources, exactly one at a time:
 
 - `RELAIS_TLS_CERT_FILE` + `RELAIS_TLS_KEY_FILE` — production. Any tool that writes a
-  certificate to disk fits (certbot, Caddy, cert-manager, a mounted volume). `SIGHUP`
-  reloads after renewal with no downtime, and a failed reload keeps the previous
-  certificate serving.
+  certificate to disk fits: certbot, lego, cert-manager, a mounted secret.
+
+  A renewal is picked up **without a restart and without a signal**. relais checks the
+  files every `RELAIS_TLS_WATCH_INTERVAL` (30s by default, two stats) and swaps the
+  certificate in for the next handshake; `SIGHUP` still forces it immediately. Watching
+  rather than signalling matters when the renewer is another container: signalling one
+  would mean handing it the Docker socket, which is a far larger privilege than
+  fetching a certificate deserves.
+
+  A failed reload keeps the previous certificate serving, and the check retries — a
+  renewal caught half-written, or a file briefly unreadable, resolves itself on the
+  next pass rather than being skipped until expiry.
+
+  For the ACME side, [deploy/coolify/docker-compose.yaml](deploy/coolify/docker-compose.yaml)
+  carries a ready-made `lego` sidecar using the DNS-01 challenge. DNS-01 because
+  HTTP-01 needs port 80 and TLS-ALPN-01 needs 443, both of which belong to the
+  platform's proxy — and because it works for a hostname that serves no HTTP at all,
+  which is the normal case for a name dedicated to mail.
 - `RELAIS_TLS_SELF_SIGNED=true` — tests and development. A certificate is generated at
   startup, its SHA-256 fingerprint logged so a client can pin it, and it is **refused
   when `RELAIS_ENV=prod`** unless explicitly overridden.
