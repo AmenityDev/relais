@@ -1399,6 +1399,58 @@
       }
     },
     "/admin/v1/credentials/{id}": {
+      "delete": {
+        "description": "Heavier than revoking, not stronger. The messages this credential sent survive but stop naming it, so the audit trail loses who submitted them; revoke is still the answer to a leaked secret.",
+        "operationId": "deleteCredential",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success, with no body."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is not valid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, but not allowed to do this."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such thing, or not yours."
+          }
+        },
+        "summary": "Remove a credential",
+        "x-relais-requires-write": true
+      },
       "get": {
         "operationId": "getCredential",
         "parameters": [
@@ -1902,6 +1954,77 @@
           }
         },
         "summary": "Revoke a credential",
+        "x-relais-requires-write": true
+      }
+    },
+    "/admin/v1/credentials/{id}:rotate": {
+      "post": {
+        "description": "The old secret stops working immediately. Everything else survives: the id, the name, the limits and the allow-list, so past messages keep their attribution. An smtp_user keeps its username and gets a new password; an api_key gets an entirely new token, because the lookup is part of the token. Answers 422 for a revoked credential: revocation is permanent. Like creation, this is a response that carries the secret once and cannot be replayed.",
+        "operationId": "rotateCredential",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedCredential"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is not valid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, but not allowed to do this."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such thing, or not yours."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was understood and is not acceptable."
+          }
+        },
+        "summary": "Issue a new secret for a credential",
         "x-relais-requires-write": true
       }
     },

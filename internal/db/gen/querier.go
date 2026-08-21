@@ -22,6 +22,10 @@ type Querier interface {
 	CreateCredential(ctx context.Context, arg CreateCredentialParams) (Credential, error)
 	CreateDomain(ctx context.Context, arg CreateDomainParams) (Domain, error)
 	CreateSMTPBackend(ctx context.Context, arg CreateSMTPBackendParams) (SmtpBackend, error)
+	// DeleteCredential removes the row outright, which revocation deliberately does
+	// not: email_message.credential_id is ON DELETE SET NULL, so the messages this
+	// credential sent survive but stop naming it. Revoking cuts off access and keeps
+	// the audit trail; deleting also gives up the trail.
 	DeleteCredential(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteDomain(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteFromPattern(ctx context.Context, arg DeleteFromPatternParams) (int64, error)
@@ -112,6 +116,19 @@ type Querier interface {
 	// RevokeCredential is idempotent and irreversible: the first revocation wins,
 	// and there is no un-revoke. Restoring access means issuing a new secret.
 	RevokeCredential(ctx context.Context, id uuid.UUID) (Credential, error)
+	// RotateCredentialSecret replaces the fingerprint, and the lookup with it.
+	//
+	// The row keeps its id, name, limits and allow-list: what changes is only what a
+	// client has to present. The old secret stops working the moment this commits,
+	// because there is nothing left to verify it against.
+	//
+	// Guarded on revoked_at rather than trusting the caller's earlier read: a
+	// rotation racing a revocation must lose, or it would restore access to a
+	// credential whose authority was deliberately withdrawn.
+	//
+	// updated_at is set by hand because credential, unlike smtp_backend and domain,
+	// carries no set_updated_at trigger.
+	RotateCredentialSecret(ctx context.Context, arg RotateCredentialSecretParams) (Credential, error)
 	// TouchCredentialLastUsed records usage at most once per interval.
 	//
 	// Writing on every request would add a row update to the hot path for no

@@ -4,6 +4,7 @@
 	let {
 		label,
 		confirm,
+		warning,
 		formaction,
 		disabled = false,
 		tone = 'danger'
@@ -11,6 +12,13 @@
 		label: string;
 		/** When set, the click is refused unless the operator types this exactly. */
 		confirm?: string;
+		/**
+		 * What this particular action costs, shown above the typed confirmation. The
+		 * generic "this cannot be undone" is true of revoking, rotating and deleting
+		 * alike and so distinguishes none of them, which is the whole question the
+		 * operator is being asked.
+		 */
+		warning?: string;
 		formaction?: string;
 		disabled?: boolean;
 		tone?: 'danger' | 'neutral';
@@ -18,7 +26,8 @@
 
 	function guard(event: MouseEvent) {
 		if (confirm === undefined) return;
-		const typed = window.prompt(`Type ${confirm} to confirm. This cannot be undone.`);
+		const lead = warning === undefined ? '' : `${warning}\n\n`;
+		const typed = window.prompt(`${lead}Type ${confirm} to confirm. This cannot be undone.`);
 		if (typed !== confirm) event.preventDefault();
 	}
 </script>

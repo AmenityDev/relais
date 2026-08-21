@@ -659,6 +659,225 @@ func TestRevokeCredential(t *testing.T) {
 	}
 }
 
+func TestRotateCredentialSecretInvalidatesTheOldAPIKey(t *testing.T) {
+	f := newFixture(t)
+
+	created, err := f.store.CreateCredential(f.ctx, NewCredentialParams{
+		Name: "billing", Type: CredentialTypeAPIKey, Enabled: true,
+		Patterns: []string{"invoices@billing.example.com"}, CreatedBy: "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	oldLookup, oldSecret, err := crypto.ParseAPIKey(created.Secret.Reveal())
+	if err != nil {
+		t.Fatalf("ParseAPIKey: %v", err)
+	}
+
+	rotated, err := f.store.RotateCredentialSecret(f.ctx, created.Credential.ID)
+	if err != nil {
+		t.Fatalf("RotateCredentialSecret: %v", err)
+	}
+
+	// The identity survives: rotating replaces the secret, not the credential. If
+	// the id moved, every message already sent would point at a row that no longer
+	// describes the sender.
+	if rotated.Credential.ID != created.Credential.ID {
+		t.Fatalf("the id changed: %s then %s", created.Credential.ID, rotated.Credential.ID)
+	}
+	if rotated.Credential.Name != created.Credential.Name {
+		t.Fatalf("the name changed: %q then %q", created.Credential.Name, rotated.Credential.Name)
+	}
+	if got := rotated.Patterns; len(got) != 1 || got[0] != "invoices@billing.example.com" {
+		t.Fatalf("the allow-list is %v, want it carried over unchanged", got)
+	}
+
+	// An API key's lookup is a slice of the token, so it cannot be kept.
+	if rotated.Credential.Lookup == oldLookup {
+		t.Fatal("the lookup was reused, so the old token still names this row")
+	}
+	if _, err := f.store.LoadCredentialByLookup(f.ctx, oldLookup); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the old lookup still resolves: %v", err)
+	}
+
+	newLookup, newSecret, err := crypto.ParseAPIKey(rotated.Secret.Reveal())
+	if err != nil {
+		t.Fatalf("ParseAPIKey (rotated): %v", err)
+	}
+	if newLookup != rotated.Credential.Lookup {
+		t.Fatalf("parsed lookup %q, stored %q", newLookup, rotated.Credential.Lookup)
+	}
+
+	auth, err := f.store.LoadCredentialByLookup(f.ctx, newLookup)
+	if err != nil {
+		t.Fatalf("LoadCredentialByLookup: %v", err)
+	}
+	if !auth.Usable() {
+		t.Fatal("a freshly rotated credential is not usable")
+	}
+	if !f.store.VerifySecret(newSecret, auth) {
+		t.Fatal("VerifySecret rejected the rotated secret")
+	}
+	// The point of the whole operation: the old secret is dead even against the
+	// row it used to belong to.
+	if f.store.VerifySecret(oldSecret, auth) {
+		t.Fatal("VerifySecret still accepts the secret that was rotated away")
+	}
+}
+
+func TestRotateCredentialSecretKeepsTheSMTPUsername(t *testing.T) {
+	f := newFixture(t)
+
+	created, err := f.store.CreateCredential(f.ctx, NewCredentialParams{
+		Name: "wordpress", Type: CredentialTypeSMTPUser, SMTPUsername: "blog",
+		Patterns: []string{"*@blog.example.com"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+
+	rotated, err := f.store.RotateCredentialSecret(f.ctx, created.Credential.ID)
+	if err != nil {
+		t.Fatalf("RotateCredentialSecret: %v", err)
+	}
+
+	// SMTP AUTH sends the username separately and it is not secret, so only half
+	// the client's configuration has to change.
+	if rotated.Credential.Lookup != "blog" {
+		t.Fatalf("lookup %q, want the username to survive rotation", rotated.Credential.Lookup)
+	}
+
+	auth, err := f.store.LoadCredentialByLookup(f.ctx, "blog")
+	if err != nil {
+		t.Fatalf("LoadCredentialByLookup: %v", err)
+	}
+	if !f.store.VerifySecret(rotated.Secret.Reveal(), auth) {
+		t.Fatal("VerifySecret rejected the rotated password")
+	}
+	if f.store.VerifySecret(created.Secret.Reveal(), auth) {
+		t.Fatal("the old password still authenticates")
+	}
+}
+
+func TestRotateCredentialSecretRefusesARevokedCredential(t *testing.T) {
+	f := newFixture(t)
+
+	created, err := f.store.CreateCredential(f.ctx, NewCredentialParams{
+		Name: "leaked", Type: CredentialTypeAPIKey, Enabled: true,
+		Patterns: []string{"a@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	if _, err := f.store.RevokeCredential(f.ctx, created.Credential.ID); err != nil {
+		t.Fatalf("RevokeCredential: %v", err)
+	}
+
+	// Revocation is permanent. Rotating past it would hand back authority that was
+	// deliberately withdrawn, which is the one thing revocation promises not to do.
+	_, err = f.store.RotateCredentialSecret(f.ctx, created.Credential.ID)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("RotateCredentialSecret on a revoked credential = %v, want ErrValidation", err)
+	}
+
+	// And nothing moved: the fingerprint a revoked row carries is still the one it
+	// carried, so a leaked secret has not been quietly swapped for a live one.
+	auth, err := f.store.LoadCredential(f.ctx, created.Credential.ID)
+	if err != nil {
+		t.Fatalf("LoadCredential: %v", err)
+	}
+	if !f.store.VerifySecret(mustSecretHalf(t, created.Secret.Reveal()), auth) {
+		t.Fatal("the refused rotation changed the stored fingerprint")
+	}
+	if auth.Usable() {
+		t.Fatal("the refused rotation made a revoked credential usable again")
+	}
+}
+
+func TestRotateCredentialSecretOnAnUnknownCredential(t *testing.T) {
+	f := newFixture(t)
+
+	if _, err := f.store.RotateCredentialSecret(f.ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("RotateCredentialSecret on an absent id = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteCredentialKeepsTheMessagesAndDropsTheAttribution(t *testing.T) {
+	f := newFixture(t)
+
+	created, err := f.store.CreateCredential(f.ctx, NewCredentialParams{
+		Name: "retired", Type: CredentialTypeAPIKey, Enabled: true,
+		Patterns: []string{"a@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	credentialID := created.Credential.ID
+
+	rejected, err := f.store.InsertRejectedMessage(f.ctx, RejectedMessageParams{
+		CredentialID: credentialID, Facade: "rest", Reason: "sender_not_allowed",
+		FromAddr: "nope@example.com", FromDomain: "example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertRejectedMessage: %v", err)
+	}
+
+	if err := f.store.DeleteCredential(f.ctx, credentialID); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+
+	if _, err := f.store.LoadCredential(f.ctx, credentialID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the credential is still loadable: %v", err)
+	}
+
+	// The patterns go with it (ON DELETE CASCADE), or the allow-list would outlive
+	// the thing it authorised.
+	var patterns int
+	if err := f.pool.QueryRow(f.ctx,
+		"SELECT count(*) FROM credential_from_pattern WHERE credential_id = $1", credentialID,
+	).Scan(&patterns); err != nil {
+		t.Fatalf("count patterns: %v", err)
+	}
+	if patterns != 0 {
+		t.Fatalf("%d patterns survived the credential", patterns)
+	}
+
+	// The message does not (ON DELETE SET NULL). This is the trade delete makes and
+	// revoke does not: the attempt is still on record, but nothing names what made
+	// it.
+	message, err := f.store.GetMessage(f.ctx, rejected.ID)
+	if err != nil {
+		t.Fatalf("GetMessage after deleting its credential: %v", err)
+	}
+	if message.CredentialID != nil {
+		t.Fatalf("credential_id = %v, want NULL after the credential was deleted", message.CredentialID)
+	}
+	if message.FromAddr != "nope@example.com" {
+		t.Fatalf("from_addr = %q, want the rejection's own record to be untouched", message.FromAddr)
+	}
+}
+
+func TestDeleteCredentialOnAnUnknownCredential(t *testing.T) {
+	f := newFixture(t)
+
+	// A row count of zero, not a driver error, so it has to be turned into
+	// ErrNotFound by hand — which is exactly the kind of thing that gets forgotten.
+	if err := f.store.DeleteCredential(f.ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteCredential on an absent id = %v, want ErrNotFound", err)
+	}
+}
+
+// mustSecretHalf returns the part of a minted API key that is fingerprinted. The
+// lookup half is public and is not covered by the HMAC.
+func mustSecretHalf(t *testing.T, token string) string {
+	t.Helper()
+	_, secret, err := crypto.ParseAPIKey(token)
+	if err != nil {
+		t.Fatalf("ParseAPIKey: %v", err)
+	}
+	return secret
+}
+
 func TestRateLimitOverrides(t *testing.T) {
 	f := newFixture(t)
 

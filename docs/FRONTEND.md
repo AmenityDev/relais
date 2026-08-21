@@ -222,7 +222,7 @@ Implemented in M7, and verified: a cross-port request returns `404` on both side
 | Dashboard | counts per status, latest rejections | `GET /admin/v1/stats`, `GET /admin/v1/messages?status=rejected` |
 | Backends | table, creation (write-only password), connection test | `GET/POST/PATCH/DELETE /admin/v1/backends`, `POST .../backends/{id}:test` |
 | Domains | table, `include_subdomains` explained, dry-run resolution | `GET/POST/PATCH/DELETE /admin/v1/domains`, `GET /admin/v1/domains:resolve?sender=` |
-| Credentials | table, creation → secret shown once, revocation | `GET/POST /admin/v1/credentials`, `POST .../credentials/{id}:revoke` |
+| Credentials | table, creation → secret shown once, rotation → the same show-once panel, revocation, deletion | `GET/POST /admin/v1/credentials`, `POST .../credentials/{id}:revoke`, `POST .../credentials/{id}:rotate`, `DELETE .../credentials/{id}` |
 | Patterns | list, validated-as-you-type add, address test | `POST/DELETE .../credentials/{id}/patterns`, `patterns:validate`, `patterns:test` |
 | Messages | paginated list (keyset), filters, detail with the SMTP error | `GET /admin/v1/messages`, `GET /admin/v1/messages/{id}` |
 
@@ -233,6 +233,19 @@ tickets:
   carries `backend_enabled` for exactly this.
 - **a credential with no pattern** can send as nobody: a warning badge, not a row
   that looks like every other.
+
+Three of the credential row's four actions are irreversible and they are not
+interchangeable, so each states its own consequence in the typed confirmation
+rather than sharing a generic "this cannot be undone":
+
+- **Rotate** issues a new secret and keeps the credential — id, name, limits and
+  allow-list — so past messages keep their attribution. The old secret stops
+  working at once, which is a live application down until it is reconfigured.
+- **Revoke** is permanent and keeps the row, so the messages it sent still name
+  it. This is the answer to a leak.
+- **Delete** removes the row. The messages survive (`ON DELETE SET NULL`) but stop
+  naming the credential, so the audit trail loses who submitted them. Offered on a
+  revoked credential too, which is where it is mostly wanted.
 
 `GET /admin/v1/identity` tells the frontend who it is acting as, so the UI can
 decide whether to render write controls without decoding the token — which is what

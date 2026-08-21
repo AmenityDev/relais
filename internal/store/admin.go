@@ -118,9 +118,9 @@ func (s *Store) UpdateDomain(ctx context.Context, id uuid.UUID, p NewDomainParam
 
 // UpdateCredentialParams describes a credential edit.
 //
-// The secret is absent on purpose: it cannot be changed. relais holds only a
-// fingerprint, so "rotate the secret" means "create a new credential and revoke
-// this one", which is also the only honest way to do it.
+// The secret is absent on purpose: relais holds only a fingerprint, so there is
+// no old value to edit relative to. Replacing it is its own operation, with its
+// own show-once response — see RotateCredentialSecret.
 type UpdateCredentialParams struct {
 	ID             uuid.UUID
 	Name           string

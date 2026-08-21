@@ -310,6 +310,29 @@ func adminOperations() []apiOperation {
 			Response: credentialResponse{}, Status: 200,
 			Write: true, Errors: []int{404},
 		},
+		{
+			Method: "POST", Path: "/admin/v1/credentials/{id}:rotate", ID: "rotateCredential",
+			Summary: "Issue a new secret for a credential",
+			Notes: "The old secret stops working immediately. Everything else survives: " +
+				"the id, the name, the limits and the allow-list, so past messages " +
+				"keep their attribution. An smtp_user keeps its username and gets a " +
+				"new password; an api_key gets an entirely new token, because the " +
+				"lookup is part of the token. Answers 422 for a revoked credential: " +
+				"revocation is permanent. Like creation, this is a response that " +
+				"carries the secret once and cannot be replayed.",
+			Params:   []apiParam{idParam},
+			Response: createdCredentialResponse{}, Status: 200,
+			Write: true, Errors: []int{404, 422},
+		},
+		{
+			Method: "DELETE", Path: "/admin/v1/credentials/{id}", ID: "deleteCredential",
+			Summary: "Remove a credential",
+			Notes: "Heavier than revoking, not stronger. The messages this credential " +
+				"sent survive but stop naming it, so the audit trail loses who " +
+				"submitted them; revoke is still the answer to a leaked secret.",
+			Params: []apiParam{idParam}, Status: 204,
+			Write: true, Errors: []int{404},
+		},
 
 		{
 			Method: "GET", Path: "/admin/v1/credentials/{id}/patterns", ID: "listPatterns",

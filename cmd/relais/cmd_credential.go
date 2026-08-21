@@ -15,7 +15,7 @@ import (
 
 func cmdCredential(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: relais credential create|list|show|revoke|pattern")
+		return errors.New("usage: relais credential create|list|show|rotate|revoke|delete|pattern")
 	}
 	switch args[0] {
 	case "create":
@@ -24,12 +24,18 @@ func cmdCredential(ctx context.Context, args []string) error {
 		return cmdCredentialList(ctx, args[1:])
 	case "show":
 		return cmdCredentialShow(ctx, args[1:])
+	case "rotate":
+		return cmdCredentialRotate(ctx, args[1:])
 	case "revoke":
 		return cmdCredentialRevoke(ctx, args[1:])
+	case "delete":
+		return cmdCredentialDelete(ctx, args[1:])
 	case "pattern":
 		return cmdCredentialPattern(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown credential action %q: want create, list, show, revoke or pattern", args[0])
+		return fmt.Errorf(
+			"unknown credential action %q: want create, list, show, rotate, revoke, delete or pattern",
+			args[0])
 	}
 }
 
@@ -237,6 +243,104 @@ func cmdCredentialShow(ctx context.Context, args []string) error {
 		fmt.Fprintf(table, "  %s\t%s\n", p.Pattern, p.ID)
 	}
 	return table.Flush()
+}
+
+func cmdCredentialRotate(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("relais credential rotate", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: relais credential rotate <id>
+
+Issues a new secret and prints it once. The old secret stops working
+immediately, so rotate when the application is ready to be reconfigured.
+
+Everything else is kept: the id, the name, the rate limits, the allowed senders,
+and the messages already sent under this credential. An smtp_user keeps its
+username and receives a new password; an api_key receives a whole new token,
+because the lookup half is part of the token itself.
+
+A revoked credential cannot be rotated: revocation is permanent.
+`)
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return errors.New("exactly one credential id is required")
+	}
+	id, err := uuid.Parse(fs.Arg(0))
+	if err != nil {
+		return fmt.Errorf("%q is not a valid credential id: %w", fs.Arg(0), err)
+	}
+
+	sess, err := openSession(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	rotated, err := sess.store.RotateCredentialSecret(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("no credential with id %s", id)
+		}
+		return err
+	}
+
+	fmt.Printf("rotated credential %s (%s)\n", rotated.Credential.Name, rotated.Credential.ID)
+	if rotated.Credential.Type == store.CredentialTypeSMTPUser {
+		fmt.Printf("\n  SMTP username: %s (unchanged)\n", rotated.Credential.Lookup)
+		fmt.Printf("  SMTP password: %s\n", rotated.Secret.Reveal())
+	} else {
+		fmt.Printf("\n  API key: %s\n", rotated.Secret.Reveal())
+	}
+
+	fmt.Fprintln(os.Stderr, "\nThe previous secret no longer works. Copy this one now: it is stored only as a fingerprint and cannot be shown again.")
+	return nil
+}
+
+func cmdCredentialDelete(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("relais credential delete", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: relais credential delete <id>
+
+Removes the credential row. This is not a stronger revoke: the messages it sent
+survive, but they stop naming the credential that submitted them, so the audit
+trail loses that link. To cut off a leaked secret and keep the trail, revoke.
+`)
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return errors.New("exactly one credential id is required")
+	}
+	id, err := uuid.Parse(fs.Arg(0))
+	if err != nil {
+		return fmt.Errorf("%q is not a valid credential id: %w", fs.Arg(0), err)
+	}
+
+	sess, err := openSession(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	// Read first so the confirmation names what is about to go, and so the deleted
+	// name reaches the operator's scrollback: nothing else will hold it afterwards.
+	existing, err := sess.store.Queries().GetCredential(ctx, id)
+	if err != nil {
+		return fmt.Errorf("no credential with id %s", id)
+	}
+	if err := sess.store.DeleteCredential(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("no credential with id %s", id)
+		}
+		return err
+	}
+	fmt.Printf("deleted credential %s (%s)\n", existing.Name, id)
+	return nil
 }
 
 func cmdCredentialRevoke(ctx context.Context, args []string) error {

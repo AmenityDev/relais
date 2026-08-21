@@ -179,6 +179,10 @@ func (s *AdminServer) Handler() http.Handler {
 			write.Post("/credentials", s.handleCreateCredential)
 			write.Patch("/credentials/{id}", s.handleUpdateCredential)
 			write.Post("/credentials/{id}:revoke", s.handleRevokeCredential)
+			// Rotation and deletion are separate verbs on purpose: one replaces the
+			// secret and keeps everything else, the other keeps nothing.
+			write.Post("/credentials/{id}:rotate", s.handleRotateCredential)
+			write.Delete("/credentials/{id}", s.handleDeleteCredential)
 			write.Post("/credentials/{id}/patterns", s.handleAddPatterns)
 			write.Delete("/credentials/{id}/patterns/{patternID}", s.handleDeletePattern)
 		})

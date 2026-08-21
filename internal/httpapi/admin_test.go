@@ -337,6 +337,8 @@ func TestViewerCannotWrite(t *testing.T) {
 		{http.MethodPost, "/admin/v1/credentials", `{"name":"new","type":"api_key"}`},
 		{http.MethodPatch, "/admin/v1/credentials/" + credentialID.String(), `{"name":"renamed"}`},
 		{http.MethodPost, "/admin/v1/credentials/" + credentialID.String() + ":revoke", ""},
+		{http.MethodPost, "/admin/v1/credentials/" + credentialID.String() + ":rotate", ""},
+		{http.MethodDelete, "/admin/v1/credentials/" + credentialID.String(), ""},
 		{http.MethodPost, "/admin/v1/credentials/" + credentialID.String() + "/patterns", `{"patterns":["a@example.com"]}`},
 		{http.MethodDelete, "/admin/v1/credentials/" + credentialID.String() + "/patterns/" + uuid.NewString(), ""},
 	}
@@ -673,6 +675,94 @@ func TestRevokedCredentialCannotBeReEnabled(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "permanent") {
 		t.Fatalf("the response does not explain why: %s", recorder.Body)
+	}
+}
+
+// Rotation is the operation that exists so a leak does not cost an operator their
+// allow-list. What it must change is the secret, and only the secret.
+func TestRotateCredentialKeepsEverythingButTheSecret(t *testing.T) {
+	f := newAdminFixture(t)
+	_, _, credentialID := f.seed()
+	token := f.adminToken()
+
+	before := decodeBody[credentialResponse](t,
+		f.do(http.MethodGet, "/admin/v1/credentials/"+credentialID.String(), token, ""))
+
+	recorder := f.do(http.MethodPost, "/admin/v1/credentials/"+credentialID.String()+":rotate", token, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body)
+	}
+	rotated := decodeBody[createdCredentialResponse](t, recorder)
+
+	if rotated.Secret == "" {
+		t.Fatal("the response carries no secret, which is the only reason it exists")
+	}
+	if rotated.Credential.ID != before.ID {
+		t.Fatalf("id = %q, want %q", rotated.Credential.ID, before.ID)
+	}
+	if rotated.Credential.Name != before.Name {
+		t.Fatalf("name = %q, want %q", rotated.Credential.Name, before.Name)
+	}
+	if rotated.Credential.PatternCount != before.PatternCount {
+		t.Fatalf("pattern_count = %d, want %d", rotated.Credential.PatternCount, before.PatternCount)
+	}
+	if rotated.Credential.Lookup == before.Lookup {
+		t.Fatal("an api_key kept its lookup, so the old token still names this row")
+	}
+	// The warning is the payload's only defence against a UI that loses the modal.
+	if !strings.Contains(rotated.Warning, "cannot be recovered") {
+		t.Fatalf("the response does not say the secret is unrecoverable: %q", rotated.Warning)
+	}
+
+	// The presented secret is the one now stored, and the store is the authority.
+	lookup, secret, err := crypto.ParseAPIKey(rotated.Secret)
+	if err != nil {
+		t.Fatalf("ParseAPIKey: %v", err)
+	}
+	auth, err := f.store.LoadCredentialByLookup(f.ctx, lookup)
+	if err != nil {
+		t.Fatalf("LoadCredentialByLookup: %v", err)
+	}
+	if !f.store.VerifySecret(secret, auth) {
+		t.Fatal("the secret the API returned does not authenticate")
+	}
+}
+
+// A revoked credential must not be rotated back to life, for the same reason it
+// must not be re-enabled: revocation is the one promise that has to hold.
+func TestRevokedCredentialCannotBeRotated(t *testing.T) {
+	f := newAdminFixture(t)
+	_, _, credentialID := f.seed()
+	token := f.adminToken()
+
+	if got := f.do(http.MethodPost, "/admin/v1/credentials/"+credentialID.String()+":revoke", token, "").Code; got != http.StatusOK {
+		t.Fatalf("revoke status = %d", got)
+	}
+
+	recorder := f.do(http.MethodPost, "/admin/v1/credentials/"+credentialID.String()+":rotate", token, "")
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", recorder.Code, recorder.Body)
+	}
+	if !strings.Contains(recorder.Body.String(), "permanent") {
+		t.Fatalf("the response does not explain why: %s", recorder.Body)
+	}
+}
+
+func TestDeleteCredential(t *testing.T) {
+	f := newAdminFixture(t)
+	_, _, credentialID := f.seed()
+	token := f.adminToken()
+
+	if got := f.do(http.MethodDelete, "/admin/v1/credentials/"+credentialID.String(), token, "").Code; got != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", got)
+	}
+	if got := f.do(http.MethodGet, "/admin/v1/credentials/"+credentialID.String(), token, "").Code; got != http.StatusNotFound {
+		t.Fatalf("the credential is still readable: status = %d, want 404", got)
+	}
+	// Deleting twice is a 404, not a 204: the second caller is telling us about a
+	// row they think exists, and it does not.
+	if got := f.do(http.MethodDelete, "/admin/v1/credentials/"+credentialID.String(), token, "").Code; got != http.StatusNotFound {
+		t.Fatalf("a second delete = %d, want 404", got)
 	}
 }
 

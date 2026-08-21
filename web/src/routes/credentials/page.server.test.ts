@@ -100,6 +100,44 @@ describe('updating a credential', () => {
 	});
 });
 
+describe('rotating a credential', () => {
+	it('posts to the rotate sub-resource', async () => {
+		await actions.rotate!(event({ id: 'c-9' }));
+
+		const call = apiFetchMock.mock.calls.at(-1);
+		expect(call?.[1]).toBe('/admin/v1/credentials/c-9:rotate');
+		expect((call?.[2] as { method: string }).method).toBe('POST');
+	});
+
+	it('returns the new secret so it can be shown once', async () => {
+		// The same reason creation does not redirect: the secret exists in this one
+		// response, and relais stores a fingerprint it cannot reverse.
+		apiFetchMock.mockResolvedValue({ credential: { id: 'c-9' }, secret: 'relais_sk_new' });
+
+		const result = (await actions.rotate!(event({ id: 'c-9' }))) as {
+			rotated: { secret: string };
+		};
+
+		expect(result.rotated.secret).toBe('relais_sk_new');
+	});
+
+	it('surfaces the 422 a revoked credential answers with', async () => {
+		// Revocation is permanent, so there is no secret to reissue. The API says so and
+		// the message is worth showing verbatim rather than becoming a generic failure.
+		apiFetchMock.mockRejectedValue(
+			new ApiCallError(422, 'invalid_request', 'credential is revoked: revocation is permanent')
+		);
+
+		const result = (await actions.rotate!(event({ id: 'c-9' }))) as {
+			status: number;
+			data: { message: string };
+		};
+
+		expect(result.status).toBe(422);
+		expect(result.data.message).toContain('permanent');
+	});
+});
+
 describe('revoking a credential', () => {
 	it('posts to the revoke sub-resource rather than deleting', async () => {
 		// Revocation is deliberately not a delete: the messages this credential sent keep
@@ -109,5 +147,17 @@ describe('revoking a credential', () => {
 		const call = apiFetchMock.mock.calls.at(-1);
 		expect(call?.[1]).toBe('/admin/v1/credentials/c-9:revoke');
 		expect((call?.[2] as { method: string }).method).toBe('POST');
+	});
+});
+
+describe('deleting a credential', () => {
+	it('sends a DELETE to the credential itself, not to the revoke sub-resource', async () => {
+		// The two sit next to each other in the UI and do different things: revoke keeps
+		// the row so its messages still name it, delete does not.
+		await actions.delete!(event({ id: 'c-9' }));
+
+		const call = apiFetchMock.mock.calls.at(-1);
+		expect(call?.[1]).toBe('/admin/v1/credentials/c-9');
+		expect((call?.[2] as { method: string }).method).toBe('DELETE');
 	});
 });

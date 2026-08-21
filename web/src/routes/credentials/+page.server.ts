@@ -95,6 +95,28 @@ export const actions: Actions = {
 		}
 	},
 
+	rotate: async ({ locals, request }) => {
+		const form = await request.formData();
+		const id = String(form.get('id') ?? '');
+		try {
+			const rotated = await apiFetch<CreatedCredential>(
+				requireSession(locals).accessToken,
+				`/admin/v1/credentials/${encodeURIComponent(id)}:rotate`,
+				{ method: 'POST', requestId: locals.requestId }
+			);
+			// Returned rather than redirected to, for the same reason creation is: the
+			// new secret exists in this one response and a redirect would discard it.
+			return { rotated };
+		} catch (cause) {
+			// 422 is the revoked case. Revocation is permanent, so there is no secret
+			// to reissue — the API says so and the message is worth showing verbatim.
+			if (cause instanceof ApiCallError && [403, 404, 422].includes(cause.status)) {
+				return fail(cause.status, { message: cause.message, values: {} });
+			}
+			failWith(cause);
+		}
+	},
+
 	revoke: async ({ locals, request }) => {
 		const form = await request.formData();
 		const id = String(form.get('id') ?? '');
@@ -105,6 +127,27 @@ export const actions: Actions = {
 				{ method: 'POST', requestId: locals.requestId }
 			);
 			return { revoked: true };
+		} catch (cause) {
+			if (cause instanceof ApiCallError && [403, 404].includes(cause.status)) {
+				return fail(cause.status, { message: cause.message, values: {} });
+			}
+			failWith(cause);
+		}
+	},
+
+	// A DELETE, unlike revoke: the row goes, and the messages it sent keep their
+	// content but stop naming it. The confirmation in the UI says so, because the
+	// two buttons sit next to each other and only one of them is recoverable from.
+	delete: async ({ locals, request }) => {
+		const form = await request.formData();
+		const id = String(form.get('id') ?? '');
+		try {
+			await apiFetch<void>(
+				requireSession(locals).accessToken,
+				`/admin/v1/credentials/${encodeURIComponent(id)}`,
+				{ method: 'DELETE', requestId: locals.requestId }
+			);
+			return { deleted: true };
 		} catch (cause) {
 			if (cause instanceof ApiCallError && [403, 404].includes(cause.status)) {
 				return fail(cause.status, { message: cause.message, values: {} });

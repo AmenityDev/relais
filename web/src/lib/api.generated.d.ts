@@ -101,7 +101,11 @@ export interface paths {
         get: operations["getCredential"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Remove a credential
+         * @description Heavier than revoking, not stronger. The messages this credential sent survive but stop naming it, so the audit trail loses who submitted them; revoke is still the answer to a leaked secret.
+         */
+        delete: operations["deleteCredential"];
         options?: never;
         head?: never;
         /** Update a credential */
@@ -177,6 +181,26 @@ export interface paths {
          * @description Irreversible, and deliberately not a delete: the messages it sent keep pointing at it, which is what makes an audit possible.
          */
         post: operations["revokeCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/v1/credentials/{id}:rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a new secret for a credential
+         * @description The old secret stops working immediately. Everything else survives: the id, the name, the limits and the allow-list, so past messages keep their attribution. An smtp_user keeps its username and gets a new password; an api_key gets an entirely new token, because the lookup is part of the token. Answers 422 for a revoked credential: revocation is permanent. Like creation, this is a response that carries the secret once and cannot be replayed.
+         */
+        post: operations["rotateCredential"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1027,6 +1051,53 @@ export interface operations {
             };
         };
     };
+    deleteCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success, with no body. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No credential, or one that is not valid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Authenticated, but not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such thing, or not yours. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     updateCredential: {
         parameters: {
             query?: never;
@@ -1377,6 +1448,64 @@ export interface operations {
             };
             /** @description No such thing, or not yours. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    rotateCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedCredential"];
+                };
+            };
+            /** @description No credential, or one that is not valid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Authenticated, but not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such thing, or not yours. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The request was understood and is not acceptable. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

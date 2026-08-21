@@ -264,6 +264,27 @@ The first two exist so nothing outside Go reimplements the pattern grammar. A co
 would drift, and the day it drifts the interface misreports what a credential may send
 as.
 
+#### The credential lifecycle
+
+Four verbs, and they are not degrees of the same thing:
+
+| Action                                   | What survives                                                                | Reach for it when                                    |
+| ---------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `PATCH .../credentials/{id}` (`enabled`) | everything; reversible                                                       | pausing an application                               |
+| `POST .../credentials/{id}:rotate`       | the id, name, limits, allow-list and every past message's attribution        | the secret needs replacing                           |
+| `POST .../credentials/{id}:revoke`       | the row, so its messages still name it; permanent, and there is no un-revoke | a secret leaked                                      |
+| `DELETE .../credentials/{id}`            | the messages, but no longer their attribution (`ON DELETE SET NULL`)         | clearing out a credential whose history nobody needs |
+
+Rotation exists because the alternative — create a replacement, revoke the old one —
+also discards the allow-list somebody reviewed, the limits somebody tuned, and the id
+every past message points at. It changes only what leaked. The old secret stops working
+the moment the call returns, so rotate when the application is ready to be
+reconfigured. An `smtp_user` keeps its username and receives a new password; an
+`api_key` receives a whole new token, because the lookup half is part of the token
+itself. A revoked credential cannot be rotated.
+
+The same four are on the CLI: `relais credential rotate|revoke|delete <id>`.
+
 **OIDC discovery is lazy**: it happens on the first admin request, not at startup. A
 provider outage therefore never stops relais from relaying mail — it makes the admin
 API unavailable, with a `503` rather than a `401`.

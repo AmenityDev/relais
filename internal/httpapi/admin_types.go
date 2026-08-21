@@ -158,7 +158,8 @@ func newCredentialResponse(row dbgen.Credential, patternCount int64) credentialR
 	}
 }
 
-// createdCredentialResponse is returned once, and only once, at creation.
+// createdCredentialResponse is returned once, and only once, when a secret is
+// issued — at creation and at rotation.
 //
 // The secret exists nowhere else: relais stores a fingerprint, so no endpoint can
 // ever return it again. The Warning field says so in the payload, because a UI

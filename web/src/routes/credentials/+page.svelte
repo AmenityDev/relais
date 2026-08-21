@@ -11,7 +11,23 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
-	const created = $derived(form && 'created' in form ? form.created : undefined);
+	// Creation and rotation return the same show-once payload, and the page treats
+	// them the same way: the secret is on screen for this render only, so the create
+	// form gives way to it rather than sitting above it inviting a navigation.
+	const issued = $derived(
+		form && 'created' in form ? form.created : form && 'rotated' in form ? form.rotated : undefined
+	);
+
+	const rotateWarning =
+		'The current secret stops working immediately. Whatever is using it will fail to send ' +
+		'until it is reconfigured with the new one.';
+	const revokeWarning =
+		'Revoking is permanent and cannot be undone by creating a secret later. The credential ' +
+		'row stays, so the messages it sent keep naming it.';
+	const deleteWarning =
+		'Deleting removes the credential entirely. The messages it sent are kept, but they stop ' +
+		'naming it, so the audit trail loses who submitted them. To cut off access and keep the ' +
+		'trail, revoke instead.';
 	const values = $derived((form && 'values' in form ? form.values : {}) as Record<string, string>);
 	let editing = $state<string | undefined>(undefined);
 </script>
@@ -33,11 +49,14 @@
 	</p>
 {/if}
 
-{#if created}
+{#if issued}
 	<div class="mt-4">
-		<CopyOnce secret={created.secret} username={created.username} />
-		{#if created.warning}
-			<p class="mt-2 text-sm text-amber-800">{created.warning}</p>
+		<p class="mb-2 text-sm text-slate-600">
+			Secret for <span class="font-medium">{issued.credential.name}</span>.
+		</p>
+		<CopyOnce secret={issued.secret} username={issued.username} />
+		{#if issued.warning}
+			<p class="mt-2 text-sm text-amber-800">{issued.warning}</p>
 		{/if}
 	</div>
 {:else if data.canWrite}
@@ -156,24 +175,54 @@
 						</Badge>
 					</td>
 					<td class="px-4 py-2.5 text-right">
-						{#if data.canWrite && credential.state !== 'revoked'}
-							<div class="flex flex-wrap justify-end gap-2">
-								<button
-									type="button"
-									onclick={() => (editing = credential.id)}
-									class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
-								>
-									Edit
-								</button>
-								<form method="POST" action="?/revoke">
-									<input type="hidden" name="id" value={credential.id} />
+						{#if data.canWrite}
+							<!-- One form, several formactions: three of these four buttons submit the
+							     same id to different endpoints, and a form each would only give the
+							     hidden input three places to fall out of step. -->
+							<form method="POST" class="flex flex-wrap justify-end gap-2">
+								<input type="hidden" name="id" value={credential.id} />
+
+								{#if credential.state !== 'revoked'}
+									<button
+										type="button"
+										onclick={() => (editing = credential.id)}
+										class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+									>
+										Edit
+									</button>
+									<!-- Rotating keeps the credential and replaces only what leaked: the
+									     id, name, limits and allowed senders survive, so past messages
+									     keep their attribution and nothing has to be re-reviewed. -->
+									<ConfirmButton
+										label="Rotate"
+										formaction="?/rotate"
+										tone="neutral"
+										confirm={credential.name}
+										warning={rotateWarning}
+									/>
 									<!-- Revocation is irreversible and deliberately not a delete: the
 									     messages this credential sent keep pointing at it, which is what
 									     makes an audit possible. -->
-									<ConfirmButton label="Revoke" confirm={credential.name} />
-								</form>
-							</div>
+									<ConfirmButton
+										label="Revoke"
+										formaction="?/revoke"
+										confirm={credential.name}
+										warning={revokeWarning}
+									/>
+								{/if}
 
+								<!-- Offered on a revoked credential too, which is where it is mostly
+								     wanted: clearing out a row whose history nobody needs. -->
+								<ConfirmButton
+									label="Delete"
+									formaction="?/delete"
+									confirm={credential.name}
+									warning={deleteWarning}
+								/>
+							</form>
+						{/if}
+
+						{#if data.canWrite && credential.state !== 'revoked'}
 							<Dialog
 								open={editing === credential.id}
 								title="Edit {credential.name}"

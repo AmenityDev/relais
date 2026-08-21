@@ -100,6 +100,10 @@ const deleteCredential = `-- name: DeleteCredential :execrows
 DELETE FROM credential WHERE id = $1
 `
 
+// DeleteCredential removes the row outright, which revocation deliberately does
+// not: email_message.credential_id is ON DELETE SET NULL, so the messages this
+// credential sent survive but stop naming it. Revoking cuts off access and keeps
+// the audit trail; deleting also gives up the trail.
 func (q *Queries) DeleteCredential(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteCredential, id)
 	if err != nil {
@@ -288,6 +292,55 @@ RETURNING id, name, type, lookup, secret_hmac, enabled, rate_limit_rps, rate_lim
 // and there is no un-revoke. Restoring access means issuing a new secret.
 func (q *Queries) RevokeCredential(ctx context.Context, id uuid.UUID) (Credential, error) {
 	row := q.db.QueryRow(ctx, revokeCredential, id)
+	var i Credential
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Type,
+		&i.Lookup,
+		&i.SecretHmac,
+		&i.Enabled,
+		&i.RateLimitRps,
+		&i.RateLimitBurst,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const rotateCredentialSecret = `-- name: RotateCredentialSecret :one
+UPDATE credential
+SET lookup      = $1,
+    secret_hmac = $2,
+    updated_at  = now()
+WHERE id = $3
+  AND revoked_at IS NULL
+RETURNING id, name, type, lookup, secret_hmac, enabled, rate_limit_rps, rate_limit_burst, created_by, created_at, updated_at, last_used_at, revoked_at
+`
+
+type RotateCredentialSecretParams struct {
+	Lookup     string
+	SecretHmac []byte
+	ID         uuid.UUID
+}
+
+// RotateCredentialSecret replaces the fingerprint, and the lookup with it.
+//
+// The row keeps its id, name, limits and allow-list: what changes is only what a
+// client has to present. The old secret stops working the moment this commits,
+// because there is nothing left to verify it against.
+//
+// Guarded on revoked_at rather than trusting the caller's earlier read: a
+// rotation racing a revocation must lose, or it would restore access to a
+// credential whose authority was deliberately withdrawn.
+//
+// updated_at is set by hand because credential, unlike smtp_backend and domain,
+// carries no set_updated_at trigger.
+func (q *Queries) RotateCredentialSecret(ctx context.Context, arg RotateCredentialSecretParams) (Credential, error) {
+	row := q.db.QueryRow(ctx, rotateCredentialSecret, arg.Lookup, arg.SecretHmac, arg.ID)
 	var i Credential
 	err := row.Scan(
 		&i.ID,

@@ -266,6 +266,103 @@ func (s *Store) RevokeCredential(ctx context.Context, id uuid.UUID) (dbgen.Crede
 	return row, nil
 }
 
+// RotateCredentialSecret mints a fresh secret for an existing credential and
+// replaces the stored fingerprint, which invalidates the old secret at once:
+// nothing is left to verify it against.
+//
+// Everything else about the credential survives — its id, name, limits,
+// allow-list and the messages that point at it — so rotating is not the same
+// thing as replacing. That is the whole reason it exists: the alternative,
+// "create a new credential and revoke this one", also throws away the allow-list
+// an operator reviewed and the id everything else recorded.
+//
+// An smtp_user keeps its username. SMTP AUTH sends the two halves separately, so
+// there is no reason to make an operator re-key both, and the username is not
+// secret. An api_key cannot keep its lookup, because the lookup is a slice of the
+// token itself: a rotated key is a new token in full.
+//
+// A revoked credential cannot be rotated. Revocation is permanent, and rotating
+// past it would restore authority that was deliberately withdrawn.
+func (s *Store) RotateCredentialSecret(ctx context.Context, id uuid.UUID) (CreatedCredential, error) {
+	existing, err := s.q.GetCredential(ctx, id)
+	if err != nil {
+		return CreatedCredential{}, wrap("get credential", err)
+	}
+	if existing.RevokedAt != nil {
+		return CreatedCredential{}, invalid(
+			"credential %q is revoked: revocation is permanent, so a new credential is the only way back",
+			existing.Name)
+	}
+
+	for attempt := range lookupCollisionRetries {
+		// SMTPUsername is the current lookup, so an smtp_user is re-minted against
+		// the username it already has; mintFor ignores the field for an api_key.
+		minted, err := s.mintFor(NewCredentialParams{Type: existing.Type, SMTPUsername: existing.Lookup})
+		if err != nil {
+			return CreatedCredential{}, err
+		}
+
+		row, err := s.q.RotateCredentialSecret(ctx, dbgen.RotateCredentialSecretParams{
+			ID:         id,
+			Lookup:     minted.Lookup,
+			SecretHmac: minted.HMAC,
+		})
+		switch {
+		case err == nil:
+			patterns, err := s.q.ListFromPatterns(ctx, id)
+			if err != nil {
+				return CreatedCredential{}, wrap("list sender patterns", err)
+			}
+			raw := make([]string, 0, len(patterns))
+			for _, p := range patterns {
+				raw = append(raw, p.Pattern)
+			}
+			return CreatedCredential{
+				Credential: row,
+				Secret:     crypto.Secret(minted.Plaintext),
+				Patterns:   raw,
+			}, nil
+
+		// The query's revoked_at guard matched nothing, and the row was there a
+		// moment ago: a revocation landed in between and it wins.
+		case errors.Is(classify(err), ErrNotFound):
+			return CreatedCredential{}, invalid(
+				"credential %q was revoked while its secret was being rotated", existing.Name)
+
+		// Same reasoning as CreateCredential: only a collision on a lookup *we*
+		// drew is worth re-drawing, which is api_key only — an smtp_user rotation
+		// writes its own username back and cannot collide with anything else.
+		case ConstraintName(classify(err)) == "credential_lookup_key" &&
+			existing.Type == CredentialTypeAPIKey &&
+			attempt < lookupCollisionRetries-1:
+			continue
+
+		default:
+			return CreatedCredential{}, wrap("rotate credential secret", err)
+		}
+	}
+	return CreatedCredential{}, errors.New("rotate credential secret: could not draw a unique lookup value")
+}
+
+// DeleteCredential removes a credential row outright.
+//
+// This is not a heavier revoke, it is a different trade. Revocation keeps the row
+// so "which credential sent this?" stays answerable forever; a delete drops it
+// and email_message.credential_id falls to NULL (ON DELETE SET NULL). The
+// messages survive with their sender, subject and status, but they no longer name
+// what submitted them. Cutting off a leaked secret is a revoke; this is for
+// clearing out a credential whose history nobody needs.
+func (s *Store) DeleteCredential(ctx context.Context, id uuid.UUID) error {
+	affected, err := s.q.DeleteCredential(ctx, id)
+	if err != nil {
+		return wrap("delete credential", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("delete credential: %w", ErrNotFound)
+	}
+	return nil
+}
+
 // AddPatterns extends a credential's allow-list.
 //
 // Every pattern is validated first, so a malformed one rejects the whole call

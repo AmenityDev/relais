@@ -542,6 +542,18 @@ func (s *AdminServer) handleCreateCredential(w http.ResponseWriter, r *http.Requ
 
 	s.audit(r, "credential created", "credential", created.Credential.ID.String(), created.Credential.Name)
 
+	writeJSON(w, http.StatusCreated, showOnce(created,
+		"This secret is shown once and cannot be recovered: relais stores only a "+
+			"fingerprint of it."))
+}
+
+// showOnce builds the only response shape that carries a secret in the clear.
+//
+// Creation and rotation share it rather than each assembling their own, because
+// the parts that are easy to forget — saying the value cannot be shown again,
+// carrying the SMTP username next to its password, warning about an allow-list
+// that permits nothing — are exactly the parts that make the response usable.
+func showOnce(created store.CreatedCredential, warning string) createdCredentialResponse {
 	patterns := created.Patterns
 	if patterns == nil {
 		patterns = []string{}
@@ -550,7 +562,7 @@ func (s *AdminServer) handleCreateCredential(w http.ResponseWriter, r *http.Requ
 		Credential: newCredentialResponse(created.Credential, int64(len(patterns))),
 		Secret:     created.Secret.Reveal(),
 		Patterns:   patterns,
-		Warning:    "This secret is shown once and cannot be recovered: relais stores only a fingerprint of it.",
+		Warning:    warning,
 	}
 	if created.Credential.Type == store.CredentialTypeSMTPUser {
 		response.Username = created.Credential.Lookup
@@ -558,8 +570,7 @@ func (s *AdminServer) handleCreateCredential(w http.ResponseWriter, r *http.Requ
 	if len(patterns) == 0 {
 		response.Warning += " No sender pattern is configured, so this credential cannot send anything yet."
 	}
-
-	writeJSON(w, http.StatusCreated, response)
+	return response
 }
 
 type updateCredentialRequest struct {
@@ -638,6 +649,63 @@ func (s *AdminServer) handleRevokeCredential(w http.ResponseWriter, r *http.Requ
 	// Revocation is the admin action most worth having in an audit trail.
 	s.audit(r, "credential revoked", "credential", row.ID.String(), row.Name)
 	writeJSON(w, http.StatusOK, newCredentialResponse(row, 0))
+}
+
+// handleRotateCredential replaces the secret and keeps everything else.
+//
+// The alternative an operator has without this — create a replacement, revoke the
+// old one — also throws away the allow-list somebody reviewed, the rate limits
+// somebody tuned, and the id every past message points at. Rotating changes only
+// the thing that leaked.
+func (s *AdminServer) handleRotateCredential(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+
+	rotated, err := s.store.RotateCredentialSecret(r.Context(), id)
+	if err != nil {
+		// A revoked credential is refused here, which is the same rule the update
+		// path enforces for "enabled": revocation is permanent either way.
+		if isValidationError(err) {
+			writeValidationError(w, "", err)
+			return
+		}
+		s.writeStoreError(w, "rotate credential", err)
+		return
+	}
+
+	// Audited for the same reason revocation is: a secret a client held stopped
+	// working at a particular moment, and somebody will need to know when.
+	s.audit(r, "credential secret rotated", "credential",
+		rotated.Credential.ID.String(), rotated.Credential.Name)
+
+	// 200, not 201: no resource came into being. The same body as creation, because
+	// the operator's problem is identical — copy this now or lose it.
+	writeJSON(w, http.StatusOK, showOnce(rotated,
+		"The previous secret stopped working the moment this was issued. The new one is "+
+			"shown once and cannot be recovered: relais stores only a fingerprint of it."))
+}
+
+// handleDeleteCredential removes the row, which revoking deliberately does not.
+//
+// The messages it sent survive — email_message.credential_id is ON DELETE SET
+// NULL — but they stop naming it, so the audit trail loses who submitted them.
+// That is the trade, and it is why revoke remains the answer to a leak.
+func (s *AdminServer) handleDeleteCredential(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := s.store.DeleteCredential(r.Context(), id); err != nil {
+		s.writeStoreError(w, "delete credential", err)
+		return
+	}
+	// The id only, as for backends and domains: the delete returns a row count,
+	// not a row, and reading the name first would fail on precisely the credential
+	// most worth deleting — one carrying a pattern that no longer parses.
+	s.audit(r, "credential deleted", "credential", id.String(), "")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- patterns ---------------------------------------------------------------

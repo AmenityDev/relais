@@ -31,10 +31,13 @@
 	});
 </script>
 
+<!-- m-auto is not decoration. The UA centres a modal <dialog> with `margin: auto`,
+     and Tailwind's preflight sets `margin: 0` on every element, which lands the
+     dialog in the top-left corner. Restating the margin is the fix. -->
 <dialog
 	bind:this={element}
 	onclose={() => onclose?.()}
-	class="w-full max-w-lg rounded-lg border border-slate-200 bg-white p-0 shadow-xl backdrop:bg-slate-900/40"
+	class="m-auto w-full max-w-lg rounded-lg border border-slate-200 bg-white p-0 shadow-xl backdrop:bg-slate-900/40"
 	aria-labelledby="dialog-title"
 >
 	<div class="border-b border-slate-200 px-5 py-3">

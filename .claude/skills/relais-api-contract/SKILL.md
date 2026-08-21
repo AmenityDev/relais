@@ -63,7 +63,7 @@ Admin reads: `identity`, `stats`, `backends`, `domains`, `domains:resolve`,
 `credentials`, `credentials/{id}`, `credentials/{id}/patterns`, `messages`,
 `messages/{id}`, plus two dry runs open to viewers (`patterns:validate`,
 `credentials/{id}/patterns:test`). Everything that writes lives in the
-admin-only `Group` — 12 operations a viewer must not be able to perform, which is
+admin-only `Group` — 14 operations a viewer must not be able to perform, which is
 covered by a test that also asserts nothing changed in the database.
 
 ## Queries and migrations
