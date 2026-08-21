@@ -365,11 +365,16 @@ docker compose --profile auth up -d     # Keycloak, realm imported, no clicking
 task migrate
 task web:key                            # put the value in .env as RELAIS_WEB_SESSION_KEY
 relais serve                            # or: task serve
-task web:dev                            # the interface, on the host
+task web:start                          # the interface, on the host, at :3000
 ```
 
 Sign in at <http://localhost:3000> as `ops` / `ops` (admin) or `watcher` /
 `watcher` (read-only). Mail lands in mailpit at <http://localhost:8025>.
+
+`task web:dev` runs the Vite dev server instead, with hot reload, on `:5173`. The realm
+allows that callback too, but `RELAIS_WEB_ORIGIN` must then name `:5173`: it is what the
+redirect URI and adapter-node's CSRF origin are both derived from (F15), and a mismatch
+refuses every form POST while navigation keeps working.
 
 The interface runs on the host rather than in a container for one reason: an OIDC
 issuer URL has to resolve to the same provider from the browser *and* from the

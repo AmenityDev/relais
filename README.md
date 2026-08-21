@@ -119,8 +119,19 @@ RELAIS_WEB_OIDC_CLIENT_SECRET=dev-only-not-a-production-secret
 RELAIS_WEB_INSECURE_COOKIE=true
 ```
 
-Then `task web:dev` and sign in at <http://localhost:3000> as `ops` / `ops`
-(administrator) or `watcher` / `watcher` (read-only).
+Then run the interface and sign in as `ops` / `ops` (administrator) or `watcher` /
+`watcher` (read-only):
+
+```sh
+task web:start   # what ships: the built server, on http://localhost:3000
+task web:dev     # or the dev server with hot reload, on http://localhost:5173
+```
+
+**`RELAIS_WEB_ORIGIN` has to name the one you run.** The OIDC redirect URI is built from
+it, and the development realm allows exactly two callbacks — `:3000` and `:5173` — so
+`task web:dev` needs the variable pointed at `http://localhost:5173`. Get it wrong and
+the interface loads while every write is refused as cross-site, which reads like a
+permission problem and is not one. `task smoke` drives the `:3000` server.
 
 The interface runs on the host rather than in a container for one reason: an OIDC
 issuer URL has to resolve to the same provider from the browser *and* from the server

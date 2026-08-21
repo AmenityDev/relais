@@ -250,6 +250,25 @@ tasks:
     cmds:
       - npm run dev
 
+  web:start:
+    desc: Build the admin interface and run it the way the container does
+    # The counterpart to web:dev. The dev server is convenient (HMR) but serves on
+    # :5173, while the built server, the container and scripts/smoke.sh all deal in
+    # :3000 — so this is the target to use when what matters is running what ships.
+    dir: web
+    deps: [web:install]
+    cmds:
+      - npm run build
+      - |
+        set -e
+        : "${RELAIS_WEB_ORIGIN:?set it in .env, e.g. http://localhost:3000}"
+        # ORIGIN and the port both come from the one origin, so they cannot disagree.
+        # adapter-node refuses every form POST as cross-site when ORIGIN does not match
+        # the address in the browser, while navigation keeps working — a failure that
+        # reads like broken RBAC.
+        port=$(printf '%s' "$RELAIS_WEB_ORIGIN" | sed -nE 's#^https?://[^/:]+:([0-9]+)/?$#\1#p')
+        ORIGIN="$RELAIS_WEB_ORIGIN" PORT="${port:-3000}" node build/index.js
+
   web:check:
     desc: Type-check, lint and test the admin interface
     dir: web

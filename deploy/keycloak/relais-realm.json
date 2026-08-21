@@ -31,10 +31,12 @@
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "http://localhost:3000/auth/callback"
+        "http://localhost:3000/auth/callback",
+        "http://localhost:5173/auth/callback"
       ],
       "webOrigins": [
-        "http://localhost:3000"
+        "http://localhost:3000",
+        "http://localhost:5173"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
