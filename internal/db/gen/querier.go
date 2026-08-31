@@ -18,6 +18,11 @@ type Querier interface {
 	// because DO NOTHING suppresses the RETURNING row and the caller would see
 	// "no rows" — an error — for what is really a no-op.
 	AddFromPattern(ctx context.Context, arg AddFromPatternParams) (CredentialFromPattern, error)
+	// AddRecipientPattern mirrors AddFromPattern, including the DO UPDATE that keeps
+	// RETURNING populated on a repeat grant.
+	//
+	// The two allow-lists are deliberately separate tables; see migration 00002.
+	AddRecipientPattern(ctx context.Context, arg AddRecipientPatternParams) (CredentialRecipientPattern, error)
 	CountEmailsByStatus(ctx context.Context) ([]CountEmailsByStatusRow, error)
 	CreateCredential(ctx context.Context, arg CreateCredentialParams) (Credential, error)
 	CreateDomain(ctx context.Context, arg CreateDomainParams) (Domain, error)
@@ -29,6 +34,7 @@ type Querier interface {
 	DeleteCredential(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteDomain(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteFromPattern(ctx context.Context, arg DeleteFromPatternParams) (int64, error)
+	DeleteRecipientPattern(ctx context.Context, arg DeleteRecipientPatternParams) (int64, error)
 	// DeleteSMTPBackend fails while a domain still points at it, thanks to the
 	// ON DELETE RESTRICT foreign key. That refusal is intentional: silently
 	// orphaning a domain would break delivery at send time instead of at edit time.
@@ -65,6 +71,9 @@ type Querier interface {
 	// the signal that matters when a secret leaks. No payload is ever stored for a
 	// rejected row, so the refused content is not retained.
 	InsertRejectedEmailMessage(ctx context.Context, arg InsertRejectedEmailMessageParams) (EmailMessage, error)
+	// ListCredentials carries both allow-list sizes, because they answer different
+	// questions and the UI shows both: pattern_count of 0 means the credential can
+	// send nothing, while recipient_pattern_count of 0 means it can send to anyone.
 	ListCredentials(ctx context.Context) ([]ListCredentialsRow, error)
 	ListDomains(ctx context.Context) ([]ListDomainsRow, error)
 	// ListEmailMessages pages the admin view, newest first.
@@ -79,6 +88,7 @@ type Querier interface {
 	// branch reachable.
 	ListEmailMessages(ctx context.Context, arg ListEmailMessagesParams) ([]ListEmailMessagesRow, error)
 	ListFromPatterns(ctx context.Context, credentialID uuid.UUID) ([]CredentialFromPattern, error)
+	ListRecipientPatterns(ctx context.Context, credentialID uuid.UUID) ([]CredentialRecipientPattern, error)
 	ListSMTPBackends(ctx context.Context) ([]SmtpBackend, error)
 	ListSMTPBackendsNeedingRewrap(ctx context.Context) ([]ListSMTPBackendsNeedingRewrapRow, error)
 	MarkEmailFailed(ctx context.Context, arg MarkEmailFailedParams) (int64, error)

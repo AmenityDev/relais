@@ -609,6 +609,168 @@ func TestAddPatternsIsIdempotentAndValidated(t *testing.T) {
 	}
 }
 
+// --- recipient allow-list ---------------------------------------------------
+
+func TestRecipientPatternsAreSeparateFromSenderPatterns(t *testing.T) {
+	f := newFixture(t)
+
+	created, err := f.store.CreateCredential(f.ctx, NewCredentialParams{
+		Name: "staging", Type: CredentialTypeAPIKey, Enabled: true,
+		Patterns:          []string{"no-reply@example.com"},
+		RecipientPatterns: []string{"*@team.internal"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	id := created.Credential.ID
+
+	if len(created.RecipientPatterns) != 1 || created.RecipientPatterns[0] != "*@team.internal" {
+		t.Fatalf("RecipientPatterns = %v, want [*@team.internal]", created.RecipientPatterns)
+	}
+
+	// The two lists live in different tables and must not leak into each other:
+	// this is the reason for the separate table, so it is worth asserting rather
+	// than trusting.
+	senders, err := f.store.ListPatterns(f.ctx, id)
+	if err != nil {
+		t.Fatalf("ListPatterns: %v", err)
+	}
+	if len(senders) != 1 || senders[0].Pattern != "no-reply@example.com" {
+		t.Fatalf("sender patterns = %v, want only the sender one", senders)
+	}
+	recipients, err := f.store.ListRecipientPatterns(f.ctx, id)
+	if err != nil {
+		t.Fatalf("ListRecipientPatterns: %v", err)
+	}
+	if len(recipients) != 1 || recipients[0].Pattern != "*@team.internal" {
+		t.Fatalf("recipient patterns = %v, want only the recipient one", recipients)
+	}
+
+	// And the compiled credential keeps them apart: a recipient pattern must never
+	// authorize a sender.
+	auth, err := f.store.LoadCredential(f.ctx, id)
+	if err != nil {
+		t.Fatalf("LoadCredential: %v", err)
+	}
+	if auth.Patterns.Len() != 1 || !auth.Recipients.Restricted() {
+		t.Fatalf("compiled lists = %d sender / restricted=%v", auth.Patterns.Len(), auth.Recipients.Restricted())
+	}
+	sender, err := frompattern.ParseAddress("dev@team.internal")
+	if err != nil {
+		t.Fatalf("ParseAddress: %v", err)
+	}
+	if auth.Patterns.Allows(sender) {
+		t.Fatal("a recipient pattern authorized a sender address")
+	}
+}
+
+func TestAddRecipientPatternsIsIdempotentAndValidated(t *testing.T) {
+	f := newFixture(t)
+
+	created, err := f.store.CreateCredential(f.ctx, NewCredentialParams{
+		Name: "app", Type: CredentialTypeAPIKey, Enabled: true,
+		Patterns: []string{"a@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	id := created.Credential.ID
+
+	// Created without recipient patterns: unrestricted, which is the permissive
+	// default and the reason the count is worth asserting.
+	auth, err := f.store.LoadCredential(f.ctx, id)
+	if err != nil {
+		t.Fatalf("LoadCredential: %v", err)
+	}
+	if auth.Recipients.Restricted() {
+		t.Fatal("a credential created without recipient patterns came out restricted")
+	}
+
+	if _, err := f.store.AddRecipientPatterns(f.ctx, id, []string{"*@team.internal", "*@team.internal"}); err != nil {
+		t.Fatalf("AddRecipientPatterns: %v", err)
+	}
+	if _, err := f.store.AddRecipientPatterns(f.ctx, id, []string{"*@team.internal", "lead@partner.test"}); err != nil {
+		t.Fatalf("AddRecipientPatterns (repeat): %v", err)
+	}
+	stored, err := f.store.ListRecipientPatterns(f.ctx, id)
+	if err != nil {
+		t.Fatalf("ListRecipientPatterns: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("%d recipient patterns, want 2", len(stored))
+	}
+
+	// An invalid pattern rejects the whole call, so a narrowing never lands
+	// half-applied.
+	if _, err := f.store.AddRecipientPatterns(f.ctx, id, []string{"ok@team.internal", "*@*"}); err == nil {
+		t.Fatal("AddRecipientPatterns accepted an invalid pattern")
+	}
+	if stored, err = f.store.ListRecipientPatterns(f.ctx, id); err != nil {
+		t.Fatalf("ListRecipientPatterns: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("%d recipient patterns after a rejected call, want 2", len(stored))
+	}
+
+	// Removal is scoped to the credential.
+	if err := f.store.RemoveRecipientPattern(f.ctx, uuid.New(), stored[0].ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("RemoveRecipientPattern with the wrong credential: got %v, want ErrNotFound", err)
+	}
+	for _, row := range stored {
+		if err := f.store.RemoveRecipientPattern(f.ctx, id, row.ID); err != nil {
+			t.Fatalf("RemoveRecipientPattern: %v", err)
+		}
+	}
+
+	// Back to unrestricted, which is a widening: removing the last restriction
+	// hands the credential the whole internet again.
+	auth, err = f.store.LoadCredential(f.ctx, id)
+	if err != nil {
+		t.Fatalf("LoadCredential: %v", err)
+	}
+	if auth.Recipients.Restricted() {
+		t.Fatal("the credential is still restricted after every pattern was removed")
+	}
+}
+
+// A stored pattern the grammar no longer understands must fail the load, not
+// degrade to "unrestricted". Failing closed on the sender side refuses a send;
+// failing open here would silently remove a guardrail an operator is relying on.
+func TestAnUnparsableStoredRecipientPatternFailsClosed(t *testing.T) {
+	f := newFixture(t)
+
+	created, err := f.store.CreateCredential(f.ctx, NewCredentialParams{
+		Name: "app", Type: CredentialTypeAPIKey, Enabled: true,
+		Patterns: []string{"a@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+
+	// Written past the store, because the store would refuse it. The value is
+	// chosen to slip through the database CHECK while the Go grammar still refuses
+	// it: a 65-character local part satisfies the constraint's regex, which does
+	// not bound that length, and exceeds the 64 the matcher allows. That is exactly
+	// the shape of "the grammar changed under existing data" — and it needs no DDL,
+	// so the constraint this suite relies on elsewhere stays in place.
+	unparsable := strings.Repeat("a", 65) + "@team.internal"
+	if _, err := frompattern.Parse(unparsable); err == nil {
+		t.Fatal("the fixture pattern is parsable, so this test proves nothing")
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		"INSERT INTO credential_recipient_pattern (credential_id, pattern) VALUES ($1, $2)",
+		created.Credential.ID, unparsable,
+	); err != nil {
+		t.Fatalf("insert an unparsable pattern: %v", err)
+	}
+
+	if _, err := f.store.LoadCredential(f.ctx, created.Credential.ID); err == nil {
+		t.Fatal("LoadCredential accepted a credential with an unparsable recipient pattern")
+	} else if !errors.Is(err, ErrValidation) {
+		t.Fatalf("error = %v, want ErrValidation", err)
+	}
+}
+
 func TestAddPatternsToUnknownCredential(t *testing.T) {
 	f := newFixture(t)
 	_, err := f.store.AddPatterns(f.ctx, uuid.New(), []string{"a@example.com"})

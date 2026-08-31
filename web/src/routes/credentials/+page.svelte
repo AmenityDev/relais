@@ -117,6 +117,25 @@
 		</div>
 
 		<div class="sm:col-span-2">
+			<Field
+				label="Allowed recipients (optional)"
+				name="recipient_patterns"
+				hint="Leave empty and this credential may send to ANY address. Fill it in to limit who it can reach — for a staging application, your own team's domain. Same four shapes as above."
+			>
+				{#snippet children({ id, describedBy })}
+					<textarea
+						{id}
+						name="recipient_patterns"
+						rows="2"
+						aria-describedby={describedBy}
+						class="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-sm"
+						placeholder="*@ourteam.example.com">{values.recipient_patterns ?? ''}</textarea
+					>
+				{/snippet}
+			</Field>
+		</div>
+
+		<div class="sm:col-span-2">
 			<button
 				type="submit"
 				class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
@@ -139,7 +158,7 @@
 		<EmptyState title="No credentials" hint="Create one for each application that sends mail." />
 	{:else}
 		<Table
-			columns={['Name', 'Type', 'Senders', 'State', '']}
+			columns={['Name', 'Type', 'Senders', 'Recipients', 'State', '']}
 			rows={data.credentials}
 			caption="Sending credentials"
 		>
@@ -161,6 +180,16 @@
 							<Badge tone="warn">no allowed sender</Badge>
 						{:else}
 							<span class="text-sm">{credential.pattern_count}</span>
+						{/if}
+					</td>
+					<td class="px-4 py-2.5">
+						{#if credential.recipient_pattern_count === 0}
+							<!-- Zero means the opposite of the column before it: no restriction, so
+							     this credential can reach anyone. Worth a badge rather than a "0",
+							     which would read as a lock-down. -->
+							<span class="text-xs text-slate-500">any address</span>
+						{:else}
+							<Badge tone="good">{credential.recipient_pattern_count} allowed</Badge>
 						{/if}
 					</td>
 					<td class="px-4 py-2.5">

@@ -34,6 +34,13 @@ type CredentialFromPattern struct {
 	CreatedAt    time.Time
 }
 
+type CredentialRecipientPattern struct {
+	ID           uuid.UUID
+	CredentialID uuid.UUID
+	Pattern      string
+	CreatedAt    time.Time
+}
+
 type Domain struct {
 	ID                uuid.UUID
 	Name              string

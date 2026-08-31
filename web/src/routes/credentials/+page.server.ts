@@ -36,12 +36,18 @@ export const actions: Actions = {
 		const patterns = String(form.get('patterns') ?? '')
 			.split(/[\s,]+/)
 			.filter((p) => p !== '');
+		// Empty means unrestricted, so an omitted field is a real choice rather than a
+		// missing one. The form says as much next to the input.
+		const recipientPatterns = String(form.get('recipient_patterns') ?? '')
+			.split(/[\s,]+/)
+			.filter((p) => p !== '');
 
 		const body = {
 			name: String(form.get('name') ?? '').trim(),
 			type: String(form.get('type') ?? 'api_key'),
 			username: String(form.get('username') ?? '').trim(),
-			patterns
+			patterns,
+			recipient_patterns: recipientPatterns
 		};
 
 		try {
@@ -58,7 +64,11 @@ export const actions: Actions = {
 				return fail(cause.status, {
 					message: cause.message,
 					field: cause.field,
-					values: { ...body, patterns: patterns.join('\n') }
+					values: {
+						...body,
+						patterns: patterns.join('\n'),
+						recipient_patterns: recipientPatterns.join('\n')
+					}
 				});
 			}
 			failWith(cause);

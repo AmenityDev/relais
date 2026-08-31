@@ -153,6 +153,7 @@ func (s *AdminServer) Handler() http.Handler {
 		admin.Get("/credentials", s.handleListCredentials)
 		admin.Get("/credentials/{id}", s.handleGetCredential)
 		admin.Get("/credentials/{id}/patterns", s.handleListPatterns)
+		admin.Get("/credentials/{id}/recipient-patterns", s.handleListRecipientPatterns)
 		admin.Get("/messages", s.handleListMessages)
 		admin.Get("/messages/{id}", s.handleGetMessage)
 
@@ -160,6 +161,7 @@ func (s *AdminServer) Handler() http.Handler {
 		// also the whole reason the frontend never reimplements the grammar.
 		admin.Post("/patterns:validate", s.handleValidatePattern)
 		admin.Post("/credentials/{id}/patterns:test", s.handleTestPattern)
+		admin.Post("/credentials/{id}/recipient-patterns:test", s.handleTestRecipient)
 
 		admin.Group(func(write chi.Router) {
 			write.Use(s.requireWrite)
@@ -185,6 +187,9 @@ func (s *AdminServer) Handler() http.Handler {
 			write.Delete("/credentials/{id}", s.handleDeleteCredential)
 			write.Post("/credentials/{id}/patterns", s.handleAddPatterns)
 			write.Delete("/credentials/{id}/patterns/{patternID}", s.handleDeletePattern)
+
+			write.Post("/credentials/{id}/recipient-patterns", s.handleAddRecipientPatterns)
+			write.Delete("/credentials/{id}/recipient-patterns/{patternID}", s.handleDeleteRecipientPattern)
 		})
 	})
 

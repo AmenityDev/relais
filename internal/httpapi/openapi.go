@@ -118,6 +118,7 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(probeResponse{}):             "ProbeResult",
 	reflect.TypeOf(patternValidationResponse{}): "PatternValidation",
 	reflect.TypeOf(patternTestResponse{}):       "PatternTest",
+	reflect.TypeOf(recipientTestResponse{}):     "RecipientTest",
 	reflect.TypeOf(resolveResponse{}):           "ResolveResult",
 	// errorEnvelope, not errorBody: writeError wraps every error as
 	// {"error": {...}}. Naming the inner type here described a shape the server never
@@ -358,6 +359,55 @@ func adminOperations() []apiOperation {
 			}},
 			Status: 204, Write: true, Errors: []int{404},
 		},
+		{
+			Method: "GET", Path: "/admin/v1/credentials/{id}/recipient-patterns",
+			ID:      "listRecipientPatterns",
+			Summary: "The addresses this credential may send to",
+			Notes: "An empty list means no restriction: the credential may send to any " +
+				"address. That is the opposite of the sender allow-list, where an " +
+				"empty list permits nothing.",
+			Params:   []apiParam{idParam},
+			Response: listResponse[patternResponse]{}, Status: 200,
+			Errors: []int{404},
+		},
+		{
+			Method: "POST", Path: "/admin/v1/credentials/{id}/recipient-patterns",
+			ID:      "addRecipientPatterns",
+			Summary: "Restrict who this credential may send to",
+			Notes: "Adding the first pattern narrows a credential that could previously " +
+				"mail anyone. Same grammar as the sender allow-list.",
+			Params: []apiParam{idParam}, Request: addPatternsRequest{},
+			RequestSchema:  "AddPatternsInput",
+			RequiredFields: []string{"patterns"},
+			Response:       listResponse[patternResponse]{}, Status: 201,
+			Write: true, Errors: []int{404, 422},
+		},
+		{
+			Method:  "DELETE",
+			Path:    "/admin/v1/credentials/{id}/recipient-patterns/{patternID}",
+			ID:      "deleteRecipientPattern",
+			Summary: "Lift one recipient restriction",
+			Notes: "Removing the last pattern leaves the credential able to send to any " +
+				"address again.",
+			Params: []apiParam{idParam, {
+				Name: "patternID", In: "path", Required: true, Type: "string", Format: "uuid",
+			}},
+			Status: 204, Write: true, Errors: []int{404},
+		},
+		{
+			Method: "POST", Path: "/admin/v1/credentials/{id}/recipient-patterns:test",
+			ID:      "testRecipient",
+			Summary: "Would this credential be allowed to send to this address",
+			Notes: "Reports restricted=false when the credential carries no recipient " +
+				"patterns at all, because \"allowed\" then means \"allowed to mail " +
+				"anyone\" rather than \"matched a rule you wrote\".",
+			Params: []apiParam{idParam}, Request: testRecipientRequest{},
+			RequestSchema:  "TestRecipientInput",
+			RequiredFields: []string{"address"},
+			Response:       recipientTestResponse{}, Status: 200,
+			Errors: []int{404, 422},
+		},
+
 		{
 			Method: "POST", Path: "/admin/v1/patterns:validate", ID: "validatePattern",
 			Summary: "Check a pattern and show its canonical form",

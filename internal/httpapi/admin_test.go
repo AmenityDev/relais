@@ -313,6 +313,144 @@ func TestAdminIdentityEndpoint(t *testing.T) {
 	}
 }
 
+// --- recipient patterns -----------------------------------------------------
+
+// The whole lifecycle through the API, because the meaning of an empty list is
+// inverted here and every response has to say so unambiguously.
+func TestRecipientPatternLifecycle(t *testing.T) {
+	f := newAdminFixture(t)
+	_, _, credentialID := f.seed()
+	token := f.adminToken()
+	base := "/admin/v1/credentials/" + credentialID.String() + "/recipient-patterns"
+
+	// Unrestricted to start with, and the credential response says so with a zero
+	// count that means "may mail anyone".
+	recorder := f.do(http.MethodGet, base, token, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list status = %d: %s", recorder.Code, recorder.Body)
+	}
+	if list := decodeBody[listResponse[patternResponse]](t, recorder); len(list.Data) != 0 {
+		t.Fatalf("a new credential already carries %d recipient patterns", len(list.Data))
+	}
+
+	recorder = f.do(http.MethodGet, "/admin/v1/credentials/"+credentialID.String(), token, "")
+	if got := decodeBody[credentialResponse](t, recorder).RecipientPatternCount; got != 0 {
+		t.Fatalf("recipient_pattern_count = %d, want 0", got)
+	}
+
+	// The dry run has to distinguish "allowed by a rule" from "allowed because
+	// there is no rule". Before any pattern exists, everything is allowed and
+	// nothing is restricted.
+	recorder = f.do(http.MethodPost, base+":test", token, `{"address":"customer@real-business.test"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("test status = %d: %s", recorder.Code, recorder.Body)
+	}
+	result := decodeBody[recipientTestResponse](t, recorder)
+	if !result.Allowed || result.Restricted || result.MatchedPattern != "" {
+		t.Fatalf("unrestricted test = %+v, want allowed with restricted=false and no matched pattern", result)
+	}
+
+	// Narrow it. The canonical form comes back, and the explanation with it.
+	recorder = f.do(http.MethodPost, base, token, `{"patterns":["*@Team.Internal","lead@partner.test"]}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("add status = %d: %s", recorder.Code, recorder.Body)
+	}
+	added := decodeBody[listResponse[patternResponse]](t, recorder)
+	if len(added.Data) != 2 {
+		t.Fatalf("%d patterns after adding two", len(added.Data))
+	}
+	if added.Data[0].Pattern != "*@team.internal" {
+		t.Fatalf("pattern = %q, want the normalized form", added.Data[0].Pattern)
+	}
+	if added.Data[0].Explanation == "" {
+		t.Fatal("the pattern came back without an explanation")
+	}
+
+	// Now the same address is refused, and the answer says a restriction exists.
+	recorder = f.do(http.MethodPost, base+":test", token, `{"address":"customer@real-business.test"}`)
+	result = decodeBody[recipientTestResponse](t, recorder)
+	if result.Allowed || !result.Restricted {
+		t.Fatalf("restricted test = %+v, want allowed=false restricted=true", result)
+	}
+	if len(result.Patterns) != 2 {
+		t.Fatalf("patterns = %v, want both for display", result.Patterns)
+	}
+
+	recorder = f.do(http.MethodPost, base+":test", token, `{"address":"dev@team.internal"}`)
+	result = decodeBody[recipientTestResponse](t, recorder)
+	if !result.Allowed || result.MatchedPattern != "*@team.internal" {
+		t.Fatalf("allowed test = %+v, want the matching pattern named", result)
+	}
+
+	recorder = f.do(http.MethodGet, "/admin/v1/credentials/"+credentialID.String(), token, "")
+	if got := decodeBody[credentialResponse](t, recorder).RecipientPatternCount; got != 2 {
+		t.Fatalf("recipient_pattern_count = %d, want 2", got)
+	}
+
+	// A pattern outside the grammar is refused, and names the field.
+	recorder = f.do(http.MethodPost, base, token, `{"patterns":["*@*"]}`)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status for an invalid pattern = %d, want 422: %s", recorder.Code, recorder.Body)
+	}
+
+	// Remove them again: the credential goes back to being able to mail anyone,
+	// which is a widening and has to be visible in the counts.
+	for _, pattern := range added.Data {
+		recorder = f.do(http.MethodDelete, base+"/"+pattern.ID, token, "")
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("delete status = %d: %s", recorder.Code, recorder.Body)
+		}
+	}
+	recorder = f.do(http.MethodGet, "/admin/v1/credentials/"+credentialID.String(), token, "")
+	if got := decodeBody[credentialResponse](t, recorder).RecipientPatternCount; got != 0 {
+		t.Fatalf("recipient_pattern_count = %d after removing both, want 0", got)
+	}
+
+	// An unknown credential is a 404, not an empty list that reads as
+	// "unrestricted".
+	recorder = f.do(http.MethodGet,
+		"/admin/v1/credentials/"+uuid.NewString()+"/recipient-patterns", token, "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status for an unknown credential = %d, want 404", recorder.Code)
+	}
+}
+
+// A credential can be created already restricted, and the response warns when it
+// is not.
+func TestCreateCredentialWithRecipientRestrictions(t *testing.T) {
+	f := newAdminFixture(t)
+	f.seed()
+	token := f.adminToken()
+
+	recorder := f.do(http.MethodPost, "/admin/v1/credentials", token,
+		`{"name":"staging","type":"api_key","patterns":["*@example.com"],"recipient_patterns":["*@team.internal"]}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body)
+	}
+	created := decodeBody[createdCredentialResponse](t, recorder)
+	if len(created.RecipientPatterns) != 1 || created.RecipientPatterns[0] != "*@team.internal" {
+		t.Fatalf("recipient_patterns = %v", created.RecipientPatterns)
+	}
+	if created.Credential.RecipientPatternCount != 1 {
+		t.Fatalf("recipient_pattern_count = %d, want 1", created.Credential.RecipientPatternCount)
+	}
+	if strings.Contains(created.Warning, "any address") {
+		t.Fatalf("warning = %q, want no unrestricted warning on a restricted credential", created.Warning)
+	}
+
+	// Without them, the permissive default is said out loud rather than left to be
+	// inferred from an absent field.
+	recorder = f.do(http.MethodPost, "/admin/v1/credentials", token,
+		`{"name":"open","type":"api_key","patterns":["*@example.com"]}`)
+	created = decodeBody[createdCredentialResponse](t, recorder)
+	if !strings.Contains(created.Warning, "may send to any address") {
+		t.Fatalf("warning = %q, want it to state that no recipient restriction is configured", created.Warning)
+	}
+	if created.RecipientPatterns == nil {
+		t.Fatal("recipient_patterns is null rather than an empty array")
+	}
+}
+
 // --- RBAC -------------------------------------------------------------------
 
 // Go is the authority on this. The UI hides what a viewer cannot do, but a hidden
@@ -341,6 +479,8 @@ func TestViewerCannotWrite(t *testing.T) {
 		{http.MethodDelete, "/admin/v1/credentials/" + credentialID.String(), ""},
 		{http.MethodPost, "/admin/v1/credentials/" + credentialID.String() + "/patterns", `{"patterns":["a@example.com"]}`},
 		{http.MethodDelete, "/admin/v1/credentials/" + credentialID.String() + "/patterns/" + uuid.NewString(), ""},
+		{http.MethodPost, "/admin/v1/credentials/" + credentialID.String() + "/recipient-patterns", `{"patterns":["a@example.com"]}`},
+		{http.MethodDelete, "/admin/v1/credentials/" + credentialID.String() + "/recipient-patterns/" + uuid.NewString(), ""},
 	}
 
 	for _, write := range writes {
@@ -365,6 +505,13 @@ func TestViewerCannotWrite(t *testing.T) {
 	}
 	if auth.Credential.RevokedAt != nil || auth.Patterns.Len() != 1 {
 		t.Fatal("the credential was affected by a refused write")
+	}
+	// A refused recipient write must not have narrowed the credential either: an
+	// unrestricted credential that silently became restricted would break every
+	// send it was making, which is a denial of service by way of a failed
+	// authorisation check.
+	if auth.Recipients.Restricted() {
+		t.Fatal("a refused write added a recipient restriction")
 	}
 }
 
@@ -391,6 +538,8 @@ func TestViewerCanRead(t *testing.T) {
 		{http.MethodGet, "/admin/v1/messages", ""},
 		{http.MethodPost, "/admin/v1/patterns:validate", `{"pattern":"*@example.com"}`},
 		{http.MethodPost, "/admin/v1/credentials/" + credentialID.String() + "/patterns:test", `{"address":"no-reply@example.com"}`},
+		{http.MethodGet, "/admin/v1/credentials/" + credentialID.String() + "/recipient-patterns", ""},
+		{http.MethodPost, "/admin/v1/credentials/" + credentialID.String() + "/recipient-patterns:test", `{"address":"someone@elsewhere.test"}`},
 	}
 
 	for _, read := range reads {

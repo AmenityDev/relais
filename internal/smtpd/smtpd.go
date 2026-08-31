@@ -537,6 +537,12 @@ func rejectionReply(rejection *ingest.Rejection) error {
 		code, enhanced = 550, smtp.EnhancedCode{5, 7, 1}
 	case ingest.ReasonDomainNotConfigured:
 		code, enhanced = 550, smtp.EnhancedCode{5, 7, 1}
+	case ingest.ReasonRecipientNotAllowed:
+		// Also 5.7.1 "delivery not authorized", and permanent: the credential will
+		// not be allowed to mail that address on a retry either. Spelled out rather
+		// than left to the default, because a recipient refusal is the one an
+		// operator will read in a client's bounce and needs to recognise.
+		code, enhanced = 550, smtp.EnhancedCode{5, 7, 1}
 	case ingest.ReasonCredentialUnusable:
 		code, enhanced = 530, smtp.EnhancedCode{5, 7, 0}
 	case ingest.ReasonRateLimited:

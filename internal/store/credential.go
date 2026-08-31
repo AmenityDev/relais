@@ -44,6 +44,10 @@ type NewCredentialParams struct {
 	// Patterns is the sender allow-list. It may be empty, and an empty list means
 	// the credential can send as nobody until patterns are added.
 	Patterns []string
+	// RecipientPatterns is the recipient allow-list, and an empty list means the
+	// opposite of the one above: no restriction, so the credential may mail
+	// anyone. See RecipientRules.
+	RecipientPatterns []string
 	// RateLimitRPS and RateLimitBurst override the process defaults when set.
 	RateLimitRPS   *float64
 	RateLimitBurst *int32
@@ -82,6 +86,9 @@ type CreatedCredential struct {
 	Credential dbgen.Credential
 	Secret     crypto.Secret
 	Patterns   []string
+	// RecipientPatterns is empty both when none were asked for and when the
+	// credential is deliberately unrestricted — those are the same state.
+	RecipientPatterns []string
 }
 
 // CreateCredential mints a secret and inserts the credential with its patterns
@@ -98,6 +105,10 @@ func (s *Store) CreateCredential(ctx context.Context, p NewCredentialParams) (Cr
 	patterns, err := normalizePatterns(p.Patterns)
 	if err != nil {
 		return CreatedCredential{}, err
+	}
+	recipientPatterns, err := normalizePatterns(p.RecipientPatterns)
+	if err != nil {
+		return CreatedCredential{}, invalid("recipient patterns: %w", err)
 	}
 
 	for attempt := range lookupCollisionRetries {
@@ -130,15 +141,27 @@ func (s *Store) CreateCredential(ctx context.Context, p NewCredentialParams) (Cr
 					return txErr
 				}
 			}
+			// Same transaction as the credential and its sender patterns: a
+			// credential that came into being restricted-in-intent but unrestricted
+			// in fact is the one shape of partial creation that matters here.
+			for _, pattern := range recipientPatterns {
+				if _, txErr := q.AddRecipientPattern(ctx, dbgen.AddRecipientPatternParams{
+					CredentialID: row.ID,
+					Pattern:      pattern,
+				}); txErr != nil {
+					return txErr
+				}
+			}
 			return nil
 		})
 
 		switch {
 		case err == nil:
 			return CreatedCredential{
-				Credential: row,
-				Secret:     crypto.Secret(minted.Plaintext),
-				Patterns:   patterns,
+				Credential:        row,
+				Secret:            crypto.Secret(minted.Plaintext),
+				Patterns:          patterns,
+				RecipientPatterns: recipientPatterns,
 			}, nil
 
 		// Only a collision on the generated lookup is worth retrying, and only
@@ -172,12 +195,76 @@ func (s *Store) mintFor(p NewCredentialParams) (crypto.Minted, error) {
 	return s.hasher.MintSMTPPassword(username)
 }
 
-// AuthCredential is a credential together with its compiled allow-list, which is
-// everything the pipeline needs to authenticate a submission and decide whether
-// the sender is permitted.
+// AuthCredential is a credential together with its compiled allow-lists, which
+// is everything the pipeline needs to authenticate a submission and decide
+// whether the sender is permitted and the recipients are in bounds.
 type AuthCredential struct {
 	Credential dbgen.Credential
 	Patterns   frompattern.Set
+	Recipients RecipientRules
+}
+
+// RecipientRules is a credential's recipient allow-list: which addresses it may
+// send *to*.
+//
+// The empty value allows everything, and that is the whole reason this type
+// exists rather than a bare frompattern.Set. The sender allow-list reads
+// "an empty set matches nothing"; this one reads "an unrestricted credential may
+// mail anyone". Both are correct and they are opposites, so a caller reaching for
+// Set.Allows on recipient patterns would invert the policy — silently, and in the
+// direction that refuses every legitimate send. Wrapping the set in a type whose
+// only matching method carries the right default makes that mistake unwriteable.
+//
+// A recipient allow-list is a guardrail, not an authentication primitive: it
+// exists so a staging credential cannot mail a real customer by accident. The
+// sender allow-list is what answers "who is this and what may they claim to be",
+// and it stays closed by default.
+type RecipientRules struct {
+	set frompattern.Set
+}
+
+// NewRecipientRules compiles a recipient allow-list. An empty input is valid and
+// means unrestricted.
+func NewRecipientRules(raw []string) (RecipientRules, error) {
+	set, err := frompattern.NewSet(raw)
+	if err != nil {
+		return RecipientRules{}, err
+	}
+	return RecipientRules{set: set}, nil
+}
+
+// Restricted reports whether the credential is limited to particular recipients.
+func (r RecipientRules) Restricted() bool { return r.set.Len() > 0 }
+
+// Allows reports whether addr may be mailed. An unrestricted credential allows
+// every address.
+func (r RecipientRules) Allows(addr frompattern.Address) bool {
+	if !r.Restricted() {
+		return true
+	}
+	return r.set.Allows(addr)
+}
+
+// MatchedBy returns the pattern that authorizes addr, when one does.
+//
+// Deliberately not the same question as Allows: an unrestricted credential
+// allows every address and is matched by no pattern, so this returns false where
+// Allows returns true. Anything deciding whether to deliver must call Allows;
+// this exists to explain an answer to an operator.
+func (r RecipientRules) MatchedBy(addr frompattern.Address) (frompattern.Pattern, bool) {
+	return r.set.Match(addr)
+}
+
+// Patterns returns the compiled patterns, for display. Empty means unrestricted.
+func (r RecipientRules) Patterns() []frompattern.Pattern { return r.set.Patterns() }
+
+// Strings returns the patterns in canonical form.
+func (r RecipientRules) Strings() []string {
+	out := make([]string, 0, r.set.Len())
+	for _, p := range r.set.Patterns() {
+		out = append(out, p.String())
+	}
+	return out
 }
 
 // Usable reports whether the credential may be used right now.
@@ -239,7 +326,25 @@ func (s *Store) withPatterns(ctx context.Context, row dbgen.Credential) (AuthCre
 		// alternative is guessing which patterns the operator still meant.
 		return AuthCredential{}, invalid("credential %q has an unparsable sender pattern: %w", row.Name, err)
 	}
-	return AuthCredential{Credential: row, Patterns: set}, nil
+
+	storedRecipients, err := s.q.ListRecipientPatterns(ctx, row.ID)
+	if err != nil {
+		return AuthCredential{}, wrap("list recipient patterns", err)
+	}
+	rawRecipients := make([]string, 0, len(storedRecipients))
+	for _, p := range storedRecipients {
+		rawRecipients = append(rawRecipients, p.Pattern)
+	}
+	// Failing closed here means refusing the send, exactly as above. An
+	// unparsable recipient pattern must not degrade to "unrestricted": that would
+	// turn a corrupted guardrail into no guardrail, which is the one outcome the
+	// operator who configured it was protecting against.
+	recipients, err := NewRecipientRules(rawRecipients)
+	if err != nil {
+		return AuthCredential{}, invalid("credential %q has an unparsable recipient pattern: %w", row.Name, err)
+	}
+
+	return AuthCredential{Credential: row, Patterns: set, Recipients: recipients}, nil
 }
 
 // VerifySecret checks a presented secret against the stored fingerprint.
@@ -413,6 +518,65 @@ func (s *Store) ListPatterns(ctx context.Context, credentialID uuid.UUID) ([]dbg
 	rows, err := s.q.ListFromPatterns(ctx, credentialID)
 	if err != nil {
 		return nil, wrap("list sender patterns", err)
+	}
+	return rows, nil
+}
+
+// AddRecipientPatterns extends a credential's recipient allow-list.
+//
+// Adding the first pattern is the moment a credential stops being able to mail
+// anyone, so this is a narrowing operation even though it is spelled "add".
+func (s *Store) AddRecipientPatterns(ctx context.Context, credentialID uuid.UUID, raw []string) ([]string, error) {
+	patterns, err := normalizePatterns(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(patterns) == 0 {
+		return nil, invalid("no patterns to add")
+	}
+
+	err = s.withTx(ctx, func(q *dbgen.Queries) error {
+		for _, pattern := range patterns {
+			if _, err := q.AddRecipientPattern(ctx, dbgen.AddRecipientPatternParams{
+				CredentialID: credentialID,
+				Pattern:      pattern,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, wrap("add recipient patterns", err)
+	}
+	return patterns, nil
+}
+
+// RemoveRecipientPattern drops one pattern from a credential's recipient
+// allow-list.
+//
+// Removing the last one leaves the credential unrestricted again, which is a
+// widening. Callers that audit this should say so.
+func (s *Store) RemoveRecipientPattern(ctx context.Context, credentialID, patternID uuid.UUID) error {
+	affected, err := s.q.DeleteRecipientPattern(ctx, dbgen.DeleteRecipientPatternParams{
+		CredentialID: credentialID,
+		ID:           patternID,
+	})
+	if err != nil {
+		return wrap("remove recipient pattern", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("remove recipient pattern: %w", ErrNotFound)
+	}
+	return nil
+}
+
+// ListRecipientPatterns returns a credential's stored recipient patterns. An
+// empty result means the credential may send to anyone.
+func (s *Store) ListRecipientPatterns(ctx context.Context, credentialID uuid.UUID) ([]dbgen.CredentialRecipientPattern, error) {
+	rows, err := s.q.ListRecipientPatterns(ctx, credentialID)
+	if err != nil {
+		return nil, wrap("list recipient patterns", err)
 	}
 	return rows, nil
 }

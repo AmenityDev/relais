@@ -44,6 +44,35 @@ func (q *Queries) AddFromPattern(ctx context.Context, arg AddFromPatternParams) 
 	return i, err
 }
 
+const addRecipientPattern = `-- name: AddRecipientPattern :one
+INSERT INTO credential_recipient_pattern (credential_id, pattern)
+VALUES ($1, $2)
+ON CONFLICT (credential_id, pattern)
+    DO UPDATE SET pattern = EXCLUDED.pattern
+RETURNING id, credential_id, pattern, created_at
+`
+
+type AddRecipientPatternParams struct {
+	CredentialID uuid.UUID
+	Pattern      string
+}
+
+// AddRecipientPattern mirrors AddFromPattern, including the DO UPDATE that keeps
+// RETURNING populated on a repeat grant.
+//
+// The two allow-lists are deliberately separate tables; see migration 00002.
+func (q *Queries) AddRecipientPattern(ctx context.Context, arg AddRecipientPatternParams) (CredentialRecipientPattern, error) {
+	row := q.db.QueryRow(ctx, addRecipientPattern, arg.CredentialID, arg.Pattern)
+	var i CredentialRecipientPattern
+	err := row.Scan(
+		&i.ID,
+		&i.CredentialID,
+		&i.Pattern,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createCredential = `-- name: CreateCredential :one
 INSERT INTO credential (
     name, type, lookup, secret_hmac, enabled,
@@ -130,6 +159,24 @@ func (q *Queries) DeleteFromPattern(ctx context.Context, arg DeleteFromPatternPa
 	return result.RowsAffected(), nil
 }
 
+const deleteRecipientPattern = `-- name: DeleteRecipientPattern :execrows
+DELETE FROM credential_recipient_pattern
+WHERE credential_id = $1 AND id = $2
+`
+
+type DeleteRecipientPatternParams struct {
+	CredentialID uuid.UUID
+	ID           uuid.UUID
+}
+
+func (q *Queries) DeleteRecipientPattern(ctx context.Context, arg DeleteRecipientPatternParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRecipientPattern, arg.CredentialID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getCredential = `-- name: GetCredential :one
 SELECT id, name, type, lookup, secret_hmac, enabled, rate_limit_rps, rate_limit_burst, created_by, created_at, updated_at, last_used_at, revoked_at FROM credential WHERE id = $1
 `
@@ -192,28 +239,37 @@ SELECT
         SELECT count(*)
         FROM credential_from_pattern p
         WHERE p.credential_id = c.id
-    ) AS pattern_count
+    ) AS pattern_count,
+    (
+        SELECT count(*)
+        FROM credential_recipient_pattern rp
+        WHERE rp.credential_id = c.id
+    ) AS recipient_pattern_count
 FROM credential c
 ORDER BY c.created_at DESC
 `
 
 type ListCredentialsRow struct {
-	ID             uuid.UUID
-	Name           string
-	Type           string
-	Lookup         string
-	SecretHmac     []byte
-	Enabled        bool
-	RateLimitRps   *float64
-	RateLimitBurst *int32
-	CreatedBy      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUsedAt     *time.Time
-	RevokedAt      *time.Time
-	PatternCount   int64
+	ID                    uuid.UUID
+	Name                  string
+	Type                  string
+	Lookup                string
+	SecretHmac            []byte
+	Enabled               bool
+	RateLimitRps          *float64
+	RateLimitBurst        *int32
+	CreatedBy             string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	LastUsedAt            *time.Time
+	RevokedAt             *time.Time
+	PatternCount          int64
+	RecipientPatternCount int64
 }
 
+// ListCredentials carries both allow-list sizes, because they answer different
+// questions and the UI shows both: pattern_count of 0 means the credential can
+// send nothing, while recipient_pattern_count of 0 means it can send to anyone.
 func (q *Queries) ListCredentials(ctx context.Context) ([]ListCredentialsRow, error) {
 	rows, err := q.db.Query(ctx, listCredentials)
 	if err != nil {
@@ -238,6 +294,7 @@ func (q *Queries) ListCredentials(ctx context.Context) ([]ListCredentialsRow, er
 			&i.LastUsedAt,
 			&i.RevokedAt,
 			&i.PatternCount,
+			&i.RecipientPatternCount,
 		); err != nil {
 			return nil, err
 		}
@@ -264,6 +321,37 @@ func (q *Queries) ListFromPatterns(ctx context.Context, credentialID uuid.UUID) 
 	items := []CredentialFromPattern{}
 	for rows.Next() {
 		var i CredentialFromPattern
+		if err := rows.Scan(
+			&i.ID,
+			&i.CredentialID,
+			&i.Pattern,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecipientPatterns = `-- name: ListRecipientPatterns :many
+SELECT id, credential_id, pattern, created_at FROM credential_recipient_pattern
+WHERE credential_id = $1
+ORDER BY pattern
+`
+
+func (q *Queries) ListRecipientPatterns(ctx context.Context, credentialID uuid.UUID) ([]CredentialRecipientPattern, error) {
+	rows, err := q.db.Query(ctx, listRecipientPatterns, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CredentialRecipientPattern{}
+	for rows.Next() {
+		var i CredentialRecipientPattern
 		if err := rows.Scan(
 			&i.ID,
 			&i.CredentialID,

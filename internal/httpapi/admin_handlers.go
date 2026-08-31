@@ -475,7 +475,8 @@ func (s *AdminServer) handleListCredentials(w http.ResponseWriter, r *http.Reque
 			ID: row.ID.String(), Name: row.Name, Type: row.Type, Lookup: row.Lookup,
 			State: credentialState(row.Enabled, row.RevokedAt), Enabled: row.Enabled,
 			RateLimitRPS: row.RateLimitRps, RateLimitBurst: row.RateLimitBurst,
-			PatternCount: row.PatternCount, CreatedBy: row.CreatedBy,
+			PatternCount: row.PatternCount, RecipientPatternCount: row.RecipientPatternCount,
+			CreatedBy:  row.CreatedBy,
 			CreatedAt:  row.CreatedAt.UTC().Format(timeLayout),
 			LastUsedAt: rfc3339(row.LastUsedAt), RevokedAt: rfc3339(row.RevokedAt),
 		})
@@ -494,7 +495,8 @@ func (s *AdminServer) handleGetCredential(w http.ResponseWriter, r *http.Request
 		s.writeStoreError(w, "get credential", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newCredentialResponse(auth.Credential, int64(auth.Patterns.Len())))
+	writeJSON(w, http.StatusOK, newCredentialResponse(auth.Credential,
+		int64(auth.Patterns.Len()), int64(len(auth.Recipients.Patterns()))))
 }
 
 type createCredentialRequest struct {
@@ -504,6 +506,11 @@ type createCredentialRequest struct {
 	// one, which is the right default for machine-to-machine use.
 	Username string   `json:"username"`
 	Patterns []string `json:"patterns"`
+	// RecipientPatterns restricts who this credential may mail. Omitted or empty
+	// means no restriction — the opposite default from Patterns above, and the
+	// only sane one: there is no pattern that spells "any address", so requiring
+	// one would make every credential unable to send.
+	RecipientPatterns []string `json:"recipient_patterns"`
 
 	RateLimitRPS   *float64 `json:"rate_limit_rps"`
 	RateLimitBurst *int32   `json:"rate_limit_burst"`
@@ -525,7 +532,8 @@ func (s *AdminServer) handleCreateCredential(w http.ResponseWriter, r *http.Requ
 
 	created, err := s.store.CreateCredential(r.Context(), store.NewCredentialParams{
 		Name: request.Name, Type: request.Type, SMTPUsername: request.Username,
-		Patterns: request.Patterns, RateLimitRPS: request.RateLimitRPS,
+		Patterns: request.Patterns, RecipientPatterns: request.RecipientPatterns,
+		RateLimitRPS:   request.RateLimitRPS,
 		RateLimitBurst: request.RateLimitBurst,
 		// The OIDC subject, so the audit trail names a person rather than "the API".
 		CreatedBy: identity.String(),
@@ -558,17 +566,29 @@ func showOnce(created store.CreatedCredential, warning string) createdCredential
 	if patterns == nil {
 		patterns = []string{}
 	}
+	recipients := created.RecipientPatterns
+	if recipients == nil {
+		recipients = []string{}
+	}
 	response := createdCredentialResponse{
-		Credential: newCredentialResponse(created.Credential, int64(len(patterns))),
-		Secret:     created.Secret.Reveal(),
-		Patterns:   patterns,
-		Warning:    warning,
+		Credential: newCredentialResponse(created.Credential,
+			int64(len(patterns)), int64(len(recipients))),
+		Secret:            created.Secret.Reveal(),
+		Patterns:          patterns,
+		RecipientPatterns: recipients,
+		Warning:           warning,
 	}
 	if created.Credential.Type == store.CredentialTypeSMTPUser {
 		response.Username = created.Credential.Lookup
 	}
 	if len(patterns) == 0 {
 		response.Warning += " No sender pattern is configured, so this credential cannot send anything yet."
+	}
+	if len(recipients) == 0 {
+		// Said out loud because it is the default and it is the permissive one. An
+		// operator creating a staging credential meant to reach three colleagues
+		// should not have to infer from silence that it can reach everyone.
+		response.Warning += " No recipient restriction is configured, so this credential may send to any address."
 	}
 	return response
 }
@@ -631,12 +651,23 @@ func (s *AdminServer) handleUpdateCredential(w http.ResponseWriter, r *http.Requ
 	}
 
 	s.audit(r, "credential updated", "credential", row.ID.String(), row.Name)
-	writeJSON(w, http.StatusOK, newCredentialResponse(row, int64(auth.Patterns.Len())))
+	writeJSON(w, http.StatusOK, newCredentialResponse(row,
+		int64(auth.Patterns.Len()), int64(len(auth.Recipients.Patterns()))))
 }
 
 func (s *AdminServer) handleRevokeCredential(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.pathUUID(w, r, "id")
 	if !ok {
+		return
+	}
+
+	// Read the allow-lists first, because revocation does not change them and the
+	// response has to report them. They used to be reported as zero, which for the
+	// recipient count reads as "unrestricted" — the wrong answer in the direction
+	// that matters, on the one action an operator takes when a secret has leaked.
+	auth, err := s.store.LoadCredential(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, "get credential", err)
 		return
 	}
 
@@ -648,7 +679,8 @@ func (s *AdminServer) handleRevokeCredential(w http.ResponseWriter, r *http.Requ
 
 	// Revocation is the admin action most worth having in an audit trail.
 	s.audit(r, "credential revoked", "credential", row.ID.String(), row.Name)
-	writeJSON(w, http.StatusOK, newCredentialResponse(row, 0))
+	writeJSON(w, http.StatusOK, newCredentialResponse(row,
+		int64(auth.Patterns.Len()), int64(len(auth.Recipients.Patterns()))))
 }
 
 // handleRotateCredential replaces the secret and keeps everything else.
@@ -853,6 +885,134 @@ func (s *AdminServer) handleTestPattern(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, newPatternTestResponse(result))
+}
+
+// --- recipient patterns -----------------------------------------------------
+//
+// The mirror of the sender allow-list above, with one semantic difference that
+// runs through every handler here: an empty list is not a locked-down credential,
+// it is an unrestricted one. Adding the first pattern narrows; removing the last
+// one widens. The audit lines say which of the two happened, because "recipient
+// pattern revoked" on its own reads like a tightening.
+
+func (s *AdminServer) handleListRecipientPatterns(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+
+	// As for sender patterns: an unknown credential is a 404, not an empty list
+	// that reads as "this credential may mail anyone".
+	if _, err := s.store.LoadCredential(r.Context(), id); err != nil {
+		s.writeStoreError(w, "get credential", err)
+		return
+	}
+
+	rows, err := s.store.ListRecipientPatterns(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, "list recipient patterns", err)
+		return
+	}
+	out := make([]patternResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, newRecipientPatternResponse(row))
+	}
+	writeJSON(w, http.StatusOK, listResponse[patternResponse]{Data: out})
+}
+
+func (s *AdminServer) handleAddRecipientPatterns(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+
+	var request addPatternsRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+
+	added, err := s.store.AddRecipientPatterns(r.Context(), id, request.Patterns)
+	if err != nil {
+		if isValidationError(err) {
+			writeValidationError(w, "patterns", err)
+			return
+		}
+		s.writeStoreError(w, "add recipient patterns", err)
+		return
+	}
+
+	s.audit(r, "recipient restriction added", "credential", id.String(), strings.Join(added, ", "))
+
+	rows, err := s.store.ListRecipientPatterns(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, "list recipient patterns", err)
+		return
+	}
+	out := make([]patternResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, newRecipientPatternResponse(row))
+	}
+	writeJSON(w, http.StatusCreated, listResponse[patternResponse]{Data: out})
+}
+
+func (s *AdminServer) handleDeleteRecipientPattern(w http.ResponseWriter, r *http.Request) {
+	credentialID, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	patternID, ok := s.pathUUID(w, r, "patternID")
+	if !ok {
+		return
+	}
+
+	if err := s.store.RemoveRecipientPattern(r.Context(), credentialID, patternID); err != nil {
+		s.writeStoreError(w, "remove recipient pattern", err)
+		return
+	}
+
+	// Counted after the removal, so the audit line can say whether the credential
+	// is now unrestricted — which is the part somebody reviewing this trail later
+	// actually needs to know. A failure here must not undo a removal that
+	// happened, so the count is best-effort.
+	detail := patternID.String()
+	if rows, err := s.store.ListRecipientPatterns(r.Context(), credentialID); err == nil && len(rows) == 0 {
+		detail += " (no restriction remains: this credential may now send to any address)"
+	}
+	s.audit(r, "recipient restriction removed", "credential", credentialID.String(), detail)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type testRecipientRequest struct {
+	Address string `json:"address"`
+}
+
+// handleTestRecipient answers "may this credential send to this address?".
+//
+// Separate from patterns:test because the questions have different answers and
+// different shapes: this one also reports whether any restriction exists at all,
+// and asks nothing about routing — a recipient's domain is somebody else's
+// problem, which is the whole point of a relay.
+func (s *AdminServer) handleTestRecipient(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+
+	var request testRecipientRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+
+	result, err := s.store.TestRecipient(r.Context(), id, request.Address)
+	if err != nil {
+		if isValidationError(err) {
+			writeValidationError(w, "address", err)
+			return
+		}
+		s.writeStoreError(w, "test recipient", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newRecipientTestResponse(result))
 }
 
 // --- messages ---------------------------------------------------------------

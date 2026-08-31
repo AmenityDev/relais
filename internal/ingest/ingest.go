@@ -13,8 +13,11 @@
 //  3. Normalize, which extracts the sender and fixes up missing headers.
 //  4. Authorise the sender against the credential's allow-list. No match is a
 //     hard rejection: there is no permissive fallback and no debug bypass.
-//  5. Resolve the backend from the sender's domain, pinning it to the message.
-//  6. Persist and enqueue, atomically.
+//  5. Check the envelope recipients against the credential's recipient
+//     allow-list, when it has one. Unlike the sender list, an empty one allows
+//     everything — it is an opt-in guardrail, not an authentication rule.
+//  6. Resolve the backend from the sender's domain, pinning it to the message.
+//  7. Persist and enqueue, atomically.
 package ingest
 
 import (
@@ -51,6 +54,11 @@ const (
 	ReasonNoRecipients        = "no_recipients"
 	ReasonTooManyRecipients   = "too_many_recipients"
 	ReasonInvalidRecipient    = "invalid_recipient"
+	// ReasonRecipientNotAllowed means the credential carries a recipient
+	// allow-list and one of the envelope recipients is outside it. Usually a
+	// staging credential doing exactly what it was restricted from doing, which is
+	// the guardrail working rather than an attack.
+	ReasonRecipientNotAllowed = "recipient_not_allowed"
 )
 
 // Rejection is a refused submission.
@@ -426,6 +434,23 @@ func (s *Service) validateRecipients(req Request, msg mailnorm.Message) ([]strin
 				Detail: fmt.Sprintf("%q is not a usable recipient address", raw),
 			}
 		}
+
+		// The recipient guardrail. Allows returns true for a credential with no
+		// recipient patterns, so this costs nothing and says nothing for the
+		// credentials that have not opted in.
+		//
+		// One disallowed recipient refuses the whole submission rather than
+		// dropping that address and delivering to the rest. Partial delivery would
+		// mean a client believing it mailed five people when it mailed four, and
+		// silently sending less than asked is the failure mode this codebase
+		// refuses everywhere else.
+		if !req.Credential.Recipients.Allows(addr) {
+			return nil, &Rejection{
+				Reason: ReasonRecipientNotAllowed,
+				Detail: fmt.Sprintf("the credential is not allowed to send to %s", addr),
+			}
+		}
+
 		normalized := addr.String()
 		if _, dup := seen[normalized]; dup {
 			// A duplicate RCPT TO delivers twice and counts twice against the
@@ -457,15 +482,20 @@ func (s *Service) reject(
 		slog.String("reason", rejection.Reason),
 		slog.String("detail", rejection.Detail),
 		slog.Int("patterns_configured", req.Credential.Patterns.Len()),
+		slog.Int("recipient_patterns_configured", len(req.Credential.Recipients.Patterns())),
 		slog.Int("recipients", len(req.EnvelopeRecipients)),
 		slog.Int("size_bytes", len(req.Raw)),
 	)
 
-	// A sender that was refused is the whole point of the record, so it is logged
-	// at warn rather than info: this is what an alert rule watches.
-	if rejection.Reason == ReasonSenderNotAllowed {
+	// A refusal that names an allow-list is the whole point of the record, so it is
+	// logged at warn rather than info: this is what an alert rule watches. The
+	// refused address is in Detail, and no recipient list, subject or body is.
+	switch rejection.Reason {
+	case ReasonSenderNotAllowed:
 		entry.Warn("submission rejected: sender not allowed for this credential")
-	} else {
+	case ReasonRecipientNotAllowed:
+		entry.Warn("submission rejected: recipient not allowed for this credential")
+	default:
 		entry.Info("submission rejected")
 	}
 

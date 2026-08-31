@@ -10,6 +10,8 @@
 
 	const validation = $derived(form && 'validation' in form ? form.validation : undefined);
 	const test = $derived(form && 'test' in form ? form.test : undefined);
+	const recipientTest = $derived(form && 'recipientTest' in form ? form.recipientTest : undefined);
+	const restricted = $derived(data.recipientPatterns.length > 0);
 	const values = $derived((form && 'values' in form ? form.values : {}) as Record<string, string>);
 </script>
 
@@ -103,6 +105,127 @@
 		</button>
 	</form>
 {/if}
+
+<h2 class="mt-8 text-sm font-semibold tracking-wide text-slate-500 uppercase">
+	Allowed recipients
+</h2>
+<p class="mt-1 max-w-prose text-sm text-slate-500">
+	Who this credential may send <em>to</em>. This list works the other way round from the one above:
+	while it is empty there is no restriction at all, and adding the first entry is what narrows the
+	credential. Use it for an application that must not be able to reach real users by accident.
+</p>
+
+<div class="mt-3">
+	{#if !restricted}
+		<!-- Not an EmptyState: "nothing here" is the permissive case, and rendering it
+		     the same way as the sender list's empty state would read as a lock-down. -->
+		<p
+			class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+			data-testid="recipients-unrestricted"
+		>
+			No restriction: this credential may send to <strong>any address</strong>.
+		</p>
+	{:else}
+		<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+			{#each data.recipientPatterns as pattern (pattern.id)}
+				<li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
+					<code class="font-mono text-sm">{pattern.pattern}</code>
+					<span class="text-xs text-slate-500">{pattern.explanation}</span>
+					{#if data.canWrite}
+						<form method="POST" action="?/removeRecipient" class="ml-auto">
+							<input type="hidden" name="pattern_id" value={pattern.id} />
+							<ConfirmButton
+								label={data.recipientPatterns.length === 1 ? 'Remove (lifts the limit)' : 'Remove'}
+								tone="neutral"
+							/>
+						</form>
+					{/if}
+				</li>
+			{/each}
+		</ul>
+	{/if}
+</div>
+
+<div class="mt-4 grid gap-4 sm:grid-cols-2">
+	{#if data.canWrite}
+		<form
+			method="POST"
+			action="?/addRecipient"
+			class="rounded-lg border border-slate-200 bg-white p-4"
+		>
+			<Field
+				label="Add allowed recipients"
+				name="recipient_patterns"
+				hint="One per line, same four shapes as senders. The first entry restricts this credential."
+			>
+				{#snippet children({ id, describedBy })}
+					<textarea
+						{id}
+						name="patterns"
+						rows="2"
+						aria-describedby={describedBy}
+						class="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-sm"
+						>{values.recipient_patterns ?? ''}</textarea
+					>
+				{/snippet}
+			</Field>
+			<button
+				type="submit"
+				class="mt-3 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+			>
+				Add
+			</button>
+		</form>
+	{/if}
+
+	<form
+		method="POST"
+		action="?/testRecipient"
+		class="rounded-lg border border-slate-200 bg-white p-4"
+	>
+		<Field
+			label="Could this credential send to…?"
+			name="address"
+			hint="Answered by the same matcher the pipeline uses at send time."
+		>
+			{#snippet children({ id, describedBy })}
+				<input
+					{id}
+					name="address"
+					placeholder="someone@elsewhere.test"
+					aria-describedby={describedBy}
+					class="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-sm"
+				/>
+			{/snippet}
+		</Field>
+		<button
+			type="submit"
+			class="mt-3 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+		>
+			Test
+		</button>
+
+		{#if recipientTest}
+			<div
+				class="mt-3 rounded-md border px-3 py-2 text-sm {recipientTest.allowed
+					? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+					: 'border-amber-200 bg-amber-50 text-amber-900'}"
+				data-testid="recipient-test-result"
+			>
+				{#if !recipientTest.restricted}
+					<!-- Allowed, but by nothing: saying only "allowed" here would present an
+					     unrestricted credential as a governed one. -->
+					Allowed, because this credential has no recipient restriction at all.
+				{:else if recipientTest.allowed}
+					Allowed by <code class="font-mono text-xs">{recipientTest.matched_pattern}</code>.
+				{:else}
+					Refused: no recipient pattern on this credential matches. A submission to this address
+					would be rejected and recorded.
+				{/if}
+			</div>
+		{/if}
+	</form>
+</div>
 
 <h2 class="mt-8 text-sm font-semibold tracking-wide text-slate-500 uppercase">Check a pattern</h2>
 <p class="mt-1 max-w-prose text-sm text-slate-500">

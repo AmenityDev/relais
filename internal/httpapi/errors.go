@@ -65,9 +65,11 @@ func writeRejection(w http.ResponseWriter, log *slog.Logger, rejection *ingest.R
 
 	status := http.StatusUnprocessableEntity
 	switch rejection.Reason {
-	case ingest.ReasonSenderNotAllowed:
-		// The credential is real but not permitted to send as this address. That
-		// is an authorisation failure, not a malformed request.
+	case ingest.ReasonSenderNotAllowed, ingest.ReasonRecipientNotAllowed:
+		// The credential is real but not permitted to send as this address, or to
+		// that recipient. Either way an authorisation failure, not a malformed
+		// request — the same submission from a differently scoped credential would
+		// be accepted unchanged.
 		status = http.StatusForbidden
 	case ingest.ReasonCredentialUnusable:
 		status = http.StatusUnauthorized

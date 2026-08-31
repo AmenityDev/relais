@@ -256,6 +256,52 @@ func (s *Store) TestPattern(ctx context.Context, credentialID uuid.UUID, address
 	return result, nil
 }
 
+// RecipientTestResult answers "may this credential send to this address?".
+//
+// It exists for the same reason PatternTestResult does: the answer comes from the
+// matcher the mail path uses, so the UI cannot disagree with what will happen.
+type RecipientTestResult struct {
+	// Address is the normalized form of what was asked about.
+	Address string
+	Allowed bool
+	// Restricted reports whether the credential has any recipient pattern at all.
+	//
+	// It has to be on the response, because "allowed" means two very different
+	// things: allowed by a rule the operator wrote, or allowed because there is no
+	// rule and this credential can mail the entire internet. Showing only Allowed
+	// would let someone believe a guardrail is in place that is not.
+	Restricted     bool
+	MatchedPattern string
+	// Patterns is the whole recipient allow-list, for display. Empty means
+	// unrestricted.
+	Patterns []string
+}
+
+// TestRecipient evaluates one recipient address against one credential's
+// recipient allow-list.
+func (s *Store) TestRecipient(ctx context.Context, credentialID uuid.UUID, address string) (RecipientTestResult, error) {
+	auth, err := s.LoadCredential(ctx, credentialID)
+	if err != nil {
+		return RecipientTestResult{}, err
+	}
+
+	addr, err := frompattern.ParseAddress(address)
+	if err != nil {
+		return RecipientTestResult{}, err
+	}
+
+	result := RecipientTestResult{
+		Address:    addr.String(),
+		Restricted: auth.Recipients.Restricted(),
+		Patterns:   auth.Recipients.Strings(),
+		Allowed:    auth.Recipients.Allows(addr),
+	}
+	if matched, ok := auth.Recipients.MatchedBy(addr); ok {
+		result.MatchedPattern = matched.String()
+	}
+	return result, nil
+}
+
 func isNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }

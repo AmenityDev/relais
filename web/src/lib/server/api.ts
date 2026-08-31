@@ -21,6 +21,7 @@ export type Stats = Schemas['Stats'];
 export type ProbeResult = Schemas['ProbeResult'];
 export type PatternValidation = Schemas['PatternValidation'];
 export type PatternTest = Schemas['PatternTest'];
+export type RecipientTest = Schemas['RecipientTest'];
 export type ResolveResult = Schemas['ResolveResult'];
 export type ApiError = Schemas['Error'];
 export type ApiErrorDetail = Schemas['ErrorDetail'];

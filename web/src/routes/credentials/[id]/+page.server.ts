@@ -6,7 +6,8 @@ import {
 	type Credential,
 	type Pattern,
 	type PatternTest,
-	type PatternValidation
+	type PatternValidation,
+	type RecipientTest
 } from '$lib/server/api';
 import { credentialLogsUrl } from '$lib/server/logs';
 import { requireSession } from '$lib/server/session';
@@ -19,13 +20,19 @@ export const load: PageServerLoad = async ({ locals, params, parent }) => {
 	const id = encodeURIComponent(params.id);
 
 	try {
-		const [credential, patterns] = await Promise.all([
+		const [credential, patterns, recipients] = await Promise.all([
 			apiFetch<Credential>(token, `/admin/v1/credentials/${id}`, { requestId }),
-			apiFetch<{ data: Pattern[] }>(token, `/admin/v1/credentials/${id}/patterns`, { requestId })
+			apiFetch<{ data: Pattern[] }>(token, `/admin/v1/credentials/${id}/patterns`, { requestId }),
+			apiFetch<{ data: Pattern[] }>(token, `/admin/v1/credentials/${id}/recipient-patterns`, {
+				requestId
+			})
 		]);
 		return {
 			credential,
 			patterns: patterns.data,
+			// An empty list here means the credential may mail any address, which is
+			// the opposite of what an empty sender list means. The page says which.
+			recipientPatterns: recipients.data,
 			canWrite: identity?.can_write === true,
 			logsUrl: credentialLogsUrl(credential.id)
 		};
@@ -88,6 +95,68 @@ export const actions: Actions = {
 					message: cause.message,
 					values: { patterns: patterns.join('\n') }
 				});
+			}
+			failWith(cause);
+		}
+	},
+
+	// The recipient allow-list. Deliberately separate actions rather than a
+	// parameter on the ones above: the two lists are different authorities, and a
+	// mis-sent form must not be able to widen one while narrowing the other.
+	addRecipient: async ({ locals, params, request }) => {
+		const form = await request.formData();
+		const patterns = String(form.get('patterns') ?? '')
+			.split(/[\s,]+/)
+			.filter((p) => p !== '');
+		try {
+			await apiFetch<{ data: Pattern[] }>(
+				requireSession(locals).accessToken,
+				`/admin/v1/credentials/${encodeURIComponent(params.id)}/recipient-patterns`,
+				{ method: 'POST', body: { patterns }, requestId: locals.requestId }
+			);
+			return { addedRecipient: true };
+		} catch (cause) {
+			if (cause instanceof ApiCallError && [403, 422].includes(cause.status)) {
+				return fail(cause.status, {
+					message: cause.message,
+					values: { recipient_patterns: patterns.join('\n') }
+				});
+			}
+			failWith(cause);
+		}
+	},
+
+	removeRecipient: async ({ locals, params, request }) => {
+		const form = await request.formData();
+		const patternId = String(form.get('pattern_id') ?? '');
+		try {
+			await apiFetch<void>(
+				requireSession(locals).accessToken,
+				`/admin/v1/credentials/${encodeURIComponent(params.id)}/recipient-patterns/${encodeURIComponent(patternId)}`,
+				{ method: 'DELETE', requestId: locals.requestId }
+			);
+			return { removedRecipient: true };
+		} catch (cause) {
+			if (cause instanceof ApiCallError && [403, 404].includes(cause.status)) {
+				return fail(cause.status, { message: cause.message, values: {} });
+			}
+			failWith(cause);
+		}
+	},
+
+	testRecipient: async ({ locals, params, request }) => {
+		const form = await request.formData();
+		const address = String(form.get('address') ?? '').trim();
+		try {
+			const recipientTest = await apiFetch<RecipientTest>(
+				requireSession(locals).accessToken,
+				`/admin/v1/credentials/${encodeURIComponent(params.id)}/recipient-patterns:test`,
+				{ method: 'POST', body: { address }, requestId: locals.requestId }
+			);
+			return { recipientTest };
+		} catch (cause) {
+			if (cause instanceof ApiCallError && cause.status === 422) {
+				return fail(422, { message: cause.message, values: {} });
 			}
 			failWith(cause);
 		}

@@ -31,6 +31,7 @@ explains a constraint in the code that looks arbitrary without it.
 | D13 | Rate limiting **in-process**, per credential; outbound throughput bounded by `smtp_backend.max_concurrency` | accepted |
 | D14 | TLS for the SMTP server: **mounted files** (reloaded on SIGHUP) **or** a **generated self-signed** certificate (tests and development, refused when `RELAIS_ENV=prod`) | accepted |
 | D15 | **A separate HTTP listener for the admin API** (`RELAIS_ADMIN_ADDR`, default `:8081`) | accepted |
+| D16 | **Recipient allow-lists**: same grammar, own table, and **empty means unrestricted** | accepted |
 
 ### D2 — why not argon2id
 
@@ -56,6 +57,44 @@ The lookup and the secret are drawn **independently**, so publishing the lookup 
 the database costs nothing: the secret keeps its 256 bits. Parsing is by fixed
 offset rather than by splitting on the separator, because the secret's alphabet
 contains `_`.
+
+### D16 — recipient allow-lists, and why empty means the opposite
+
+A credential can be limited in who it may send **to**, not only who it may send **as**.
+The motivating case is a staging application: its sender allow-list is correct, it holds
+production data, and nothing stops it mailing a real customer.
+
+Three decisions, and the third is the one to remember:
+
+1. **The same grammar** (`internal/frompattern`), unchanged. Reusing it means one
+   matcher, one fuzz corpus, one closed form, and no second place for a regex to appear.
+   The package name says "from" and now serves both; renaming it would touch the CI fuzz
+   steps, the Taskfile and every import, so the doc comment carries the correction
+   instead.
+2. **Its own table** (`credential_recipient_pattern`), not a `kind` column on
+   `credential_from_pattern`. A single table would put a discriminator in every query,
+   and the day one is forgotten on the mail path a recipient pattern starts authorising a
+   *sender* — a silent widening of the one check this service exists for. Two tables make
+   that unwriteable.
+3. **An empty list means no restriction**, the exact opposite of the sender list. A
+   sender allow-list answers "who may this credential claim to be", where
+   closed-by-default is the only safe answer. A recipient allow-list is a guardrail an
+   operator opts into. And closed-by-default is not even expressible: the grammar has no
+   "any address" pattern, so it would have meant every existing credential losing the
+   ability to send the moment the migration ran.
+
+That asymmetry is the sharp edge. `frompattern.Set.Allows` returns false for an empty
+set, which is right for senders and inverted for recipients, so the recipient list is
+wrapped in `store.RecipientRules` whose `Allows` carries the other default. Reaching for
+the bare `Set` would refuse every legitimate send; the wrapper makes the mistake hard to
+write and a unit test pins both directions.
+
+Enforcement is in `ingest` only, for both façades. Refusing at `RCPT TO` would give an
+SMTP client a per-recipient answer, but relais refuses the whole submission anyway —
+delivering to the allowed recipients and dropping the rest would mean a client believing
+it mailed five people when it mailed four — and a second enforcement point outside the
+one pipeline is exactly what D1's shape exists to prevent. The refusal is `403` on the
+API, `550 5.7.1` over SMTP, and a `rejected` row carrying the attempted recipients.
 
 ### D5 — the pattern grammar
 
@@ -95,7 +134,8 @@ relais/
 │   │   └── gen/                # generated — never edited by hand
 │   ├── crypto/                 # AES-GCM keyring, HMAC+pepper, Secret type
 │   ├── tlsconf/                # certificate: mounted files or generated
-│   ├── frompattern/            # grammar and matcher (security core)
+│   ├── frompattern/            # grammar and matcher (security core), used for
+│   │                           # both the sender and recipient allow-lists
 │   ├── store/                  # the only place that touches the tables
 │   ├── mailbuild/              # REST JSON → RFC 5322
 │   ├── mailnorm/               # From extraction, missing headers
@@ -195,6 +235,11 @@ runner, exercised by every database-backed test), `obs` (telemetry wiring), and
 - a `From` outside the allow-list → a `rejected` row with the attempted address and
   the client IP, no job, no retained content
 - a credential with no pattern can send as nobody
+- recipient allow-lists: an empty one allows every address, a non-empty one refuses
+  anything outside it, one disallowed recipient refuses the whole submission, and the
+  refusal is recorded with the attempted recipients
+- the two allow-lists cannot leak into each other: a recipient pattern never authorises a
+  sender
 - `Bcc` removed from the relayed bytes, kept in the database for the audit trail
 - MIME body byte-identical after normalization (quoted-printable, base64, 8bit,
   multipart, long lines)

@@ -23,7 +23,8 @@ handing every application the relay's own credentials.
 - **An unauthorised `From` is rejected and recorded**, with enough context to
   investigate a compromised credential and never with the content of the message.
 - **A credential with no configured pattern can send as nobody.** The allow-list is
-  closed by default.
+  closed by default. A credential can additionally be restricted in who it may send
+  **to**, which is how a staging application is stopped from reaching real users.
 - **Message content is not kept.** Payloads are held until delivery succeeds and are
   returned by no endpoint.
 
@@ -239,6 +240,38 @@ A partial wildcard (`no-*@example.com`) is refused, and no user-supplied regular
 expression is ever evaluated. Domains are normalised to punycode, so `Exemplé.COM` and
 `xn--exempl-gva.com` are the same pattern.
 
+### Recipient restrictions
+
+A credential can also be limited in who it may send **to**, with the same four shapes:
+
+```sh
+relais credential recipient add <credential-id> -to '*@ourteam.example.com'
+
+# or at creation
+relais credential create -name staging -from '*@staging.example.com' \
+  -to '*@ourteam.example.com'
+```
+
+The case this exists for is a staging or preview application: it holds real data, it
+sends real mail, and nothing about the sender allow-list stops it reaching a real
+customer. Restricting its recipients turns "we emailed 4000 users from staging" into a
+refusal recorded against the credential that tried.
+
+**An empty recipient list means no restriction**, which is the opposite of the sender
+list — where an empty list permits nothing. The asymmetry is deliberate: a sender
+allow-list answers "who may this credential claim to be", and closed-by-default is the
+only safe answer; a recipient allow-list is a guardrail an operator opts into, and there
+is no pattern that spells "any address", so closed-by-default would simply mean no
+credential could send. Adding the first pattern narrows; removing the last one widens.
+The CLI, the API and the interface all say which of the two just happened.
+
+The check runs on the **envelope** recipients — the addresses mail is actually delivered
+to, which is `RCPT TO` over SMTP and the union of `to`, `cc` and `bcc` over the API. One
+recipient outside the list refuses the whole submission rather than quietly delivering
+to the rest: a client believing it mailed five people when it mailed four is worse than
+an error it can see. The refusal is a `403` on the API and `550 5.7.1` over SMTP, and it
+is recorded like a sender refusal, with the attempted recipients and the client's IP.
+
 ## Administration
 
 ### Admin API
@@ -257,6 +290,7 @@ because they are what make the interface useful rather than merely functional:
 | ----------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `POST /admin/v1/patterns:validate`              | is this pattern valid, and what is its canonical form?                                  |
 | `POST /admin/v1/credentials/{id}/patterns:test` | would this credential be allowed to send as this address, and does any domain route it? |
+| `POST /admin/v1/credentials/{id}/recipient-patterns:test` | may this credential send to this address, and is it restricted at all?         |
 | `GET /admin/v1/domains:resolve?sender=`         | which relay would carry this sender's mail?                                             |
 | `POST /admin/v1/backends/{id}:test`             | do these relay credentials actually work? (connects and authenticates, sends nothing)   |
 

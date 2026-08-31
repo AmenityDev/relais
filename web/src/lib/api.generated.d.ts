@@ -167,6 +167,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/v1/credentials/{id}/recipient-patterns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The addresses this credential may send to
+         * @description An empty list means no restriction: the credential may send to any address. That is the opposite of the sender allow-list, where an empty list permits nothing.
+         */
+        get: operations["listRecipientPatterns"];
+        put?: never;
+        /**
+         * Restrict who this credential may send to
+         * @description Adding the first pattern narrows a credential that could previously mail anyone. Same grammar as the sender allow-list.
+         */
+        post: operations["addRecipientPatterns"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/v1/credentials/{id}/recipient-patterns/{patternID}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Lift one recipient restriction
+         * @description Removing the last pattern leaves the credential able to send to any address again.
+         */
+        delete: operations["deleteRecipientPattern"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/v1/credentials/{id}/recipient-patterns:test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Would this credential be allowed to send to this address
+         * @description Reports restricted=false when the credential carries no recipient patterns at all, because "allowed" then means "allowed to mail anyone" rather than "matched a rule you wrote".
+         */
+        post: operations["testRecipient"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/v1/credentials/{id}:revoke": {
         parameters: {
             query?: never;
@@ -420,12 +484,14 @@ export interface components {
             /** Format: int32 */
             rate_limit_burst?: number | null;
             rate_limit_rps?: number | null;
+            recipient_patterns?: string[];
             type: string;
             username?: string;
         };
         CreatedCredential: {
             credential: components["schemas"]["Credential"];
             patterns: string[];
+            recipient_patterns: string[];
             secret: string;
             username?: string;
             warning: string;
@@ -443,6 +509,8 @@ export interface components {
             /** Format: int32 */
             rate_limit_burst: number | null;
             rate_limit_rps: number | null;
+            /** Format: int64 */
+            recipient_pattern_count: number;
             revoked_at: string | null;
             state: string;
             type: string;
@@ -565,6 +633,13 @@ export interface components {
             ok: boolean;
             used_tls: boolean;
         };
+        RecipientTest: {
+            address: string;
+            allowed: boolean;
+            matched_pattern?: string;
+            patterns: string[];
+            restricted: boolean;
+        };
         ResolveResult: {
             backend_address?: string;
             backend_id?: string;
@@ -589,6 +664,9 @@ export interface components {
             };
         };
         TestPatternInput: {
+            address: string;
+        };
+        TestRecipientInput: {
             address: string;
         };
         ValidatePatternInput: {
@@ -1359,6 +1437,245 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PatternTest"];
+                };
+            };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No credential, or one that is not valid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Authenticated, but not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such thing, or not yours. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The request was understood and is not acceptable. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listRecipientPatterns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatternList"];
+                };
+            };
+            /** @description No credential, or one that is not valid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Authenticated, but not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such thing, or not yours. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    addRecipientPatterns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddPatternsInput"];
+            };
+        };
+        responses: {
+            /** @description Success. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatternList"];
+                };
+            };
+            /** @description The body is not valid JSON. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No credential, or one that is not valid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Authenticated, but not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such thing, or not yours. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The request was understood and is not acceptable. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteRecipientPattern: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                patternID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success, with no body. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No credential, or one that is not valid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Authenticated, but not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such thing, or not yours. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    testRecipient: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestRecipientInput"];
+            };
+        };
+        responses: {
+            /** @description Success. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientTest"];
                 };
             };
             /** @description The body is not valid JSON. */

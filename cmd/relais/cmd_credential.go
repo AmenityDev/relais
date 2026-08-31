@@ -15,7 +15,7 @@ import (
 
 func cmdCredential(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: relais credential create|list|show|rotate|revoke|delete|pattern")
+		return errors.New("usage: relais credential create|list|show|rotate|revoke|delete|pattern|recipient")
 	}
 	switch args[0] {
 	case "create":
@@ -30,11 +30,13 @@ func cmdCredential(ctx context.Context, args []string) error {
 		return cmdCredentialRevoke(ctx, args[1:])
 	case "delete":
 		return cmdCredentialDelete(ctx, args[1:])
+	case "recipient":
+		return cmdCredentialRecipient(ctx, args[1:])
 	case "pattern":
 		return cmdCredentialPattern(ctx, args[1:])
 	default:
 		return fmt.Errorf(
-			"unknown credential action %q: want create, list, show, rotate, revoke, delete or pattern",
+			"unknown credential action %q: want create, list, show, rotate, revoke, delete, pattern or recipient",
 			args[0])
 	}
 }
@@ -62,6 +64,8 @@ func cmdCredentialCreate(ctx context.Context, args []string) error {
 	username := fs.String("username", "", "SMTP username for -type smtp_user (generated when omitted)")
 	var patterns stringList
 	fs.Var(&patterns, "from", "allowed From pattern; repeat or comma-separate")
+	var recipients stringList
+	fs.Var(&recipients, "to", "allowed recipient pattern; repeat or comma-separate (omit for no restriction)")
 	rps := fs.Float64("rate-limit-rps", 0, "per-credential rate limit override, in requests per second")
 	burst := fs.Int("rate-limit-burst", 0, "per-credential burst override")
 	disabled := fs.Bool("disabled", false, "create the credential without enabling it")
@@ -81,10 +85,17 @@ Sender patterns take one of four shapes, and nothing else:
 Note that "*.example.com" does not include "example.com" itself. A credential
 created with no pattern can send as nobody until one is added.
 
+-to restricts who the credential may send to, using the same four shapes. It
+works the other way round from -from: omitting it means no restriction, so the
+credential may mail any address. Use it for a staging credential that must not
+be able to reach a real customer by accident.
+
 Examples:
   relais credential create -name billing-api -from 'invoices@billing.example.com'
   relais credential create -name wordpress -type smtp_user -username blog \
     -from '*@blog.example.com'
+  relais credential create -name staging -from '*@staging.example.com' \
+    -to '*@ourteam.example.com'
 
 Flags:
 `)
@@ -103,8 +114,11 @@ Flags:
 		Type:         *kind,
 		SMTPUsername: *username,
 		Patterns:     patterns,
-		CreatedBy:    cliActor(),
-		Enabled:      !*disabled,
+		// Empty means unrestricted, which is why the summary below says so out loud
+		// rather than printing nothing.
+		RecipientPatterns: recipients,
+		CreatedBy:         cliActor(),
+		Enabled:           !*disabled,
 	}
 	if *rps > 0 {
 		params.RateLimitRPS = rps
@@ -150,11 +164,24 @@ Flags:
 	if len(created.Patterns) == 0 {
 		fmt.Fprintln(os.Stderr, "\nWarning: no sender pattern is configured, so this credential cannot send anything yet.")
 		fmt.Fprintf(os.Stderr, "Add one with: relais credential pattern add %s -from '<pattern>'\n", created.Credential.ID)
-		return nil
+	} else {
+		fmt.Println("\n  allowed senders:")
+		for _, p := range created.Patterns {
+			fmt.Printf("    %s\n", p)
+		}
 	}
-	fmt.Println("\n  allowed senders:")
-	for _, p := range created.Patterns {
-		fmt.Printf("    %s\n", p)
+
+	// Stated either way. An absent section would leave the reader to infer the
+	// permissive default from silence, and the whole point of this flag is that
+	// somebody wanted a limit.
+	if len(created.RecipientPatterns) == 0 {
+		fmt.Println("\n  allowed recipients: any address (no restriction configured)")
+		fmt.Fprintf(os.Stderr, "Restrict them with: relais credential recipient add %s -to '<pattern>'\n", created.Credential.ID)
+	} else {
+		fmt.Println("\n  allowed recipients:")
+		for _, p := range created.RecipientPatterns {
+			fmt.Printf("    %s\n", p)
+		}
 	}
 	return nil
 }
@@ -181,14 +208,21 @@ func cmdCredentialList(ctx context.Context, args []string) error {
 	}
 
 	table := newTable()
-	fmt.Fprintln(table, "NAME\tTYPE\tLOOKUP\tPATTERNS\tSTATE\tLAST USED\tID")
+	fmt.Fprintln(table, "NAME\tTYPE\tLOOKUP\tSENDERS\tRECIPIENTS\tSTATE\tLAST USED\tID")
 	for _, c := range credentials {
 		lastUsed := "never"
 		if c.LastUsedAt != nil {
 			lastUsed = c.LastUsedAt.Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			c.Name, c.Type, c.Lookup, c.PatternCount, credentialState(c.Enabled, c.RevokedAt != nil), lastUsed, c.ID)
+		// "any" rather than "0": zero recipient patterns means unrestricted, and a
+		// column of numbers would read as the same kind of count as the one before it.
+		recipients := "any"
+		if c.RecipientPatternCount > 0 {
+			recipients = fmt.Sprintf("%d", c.RecipientPatternCount)
+		}
+		fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			c.Name, c.Type, c.Lookup, c.PatternCount, recipients,
+			credentialState(c.Enabled, c.RevokedAt != nil), lastUsed, c.ID)
 	}
 	return table.Flush()
 }
@@ -234,12 +268,33 @@ func cmdCredentialShow(ctx context.Context, args []string) error {
 	}
 	if len(stored) == 0 {
 		fmt.Println("\n  allowed senders: none (this credential cannot send anything)")
+	} else {
+		fmt.Println("\n  allowed senders:")
+		table := newTable()
+		fmt.Fprintln(table, "  PATTERN\tPATTERN ID")
+		for _, p := range stored {
+			fmt.Fprintf(table, "  %s\t%s\n", p.Pattern, p.ID)
+		}
+		if err := table.Flush(); err != nil {
+			return err
+		}
+	}
+
+	recipients, err := sess.store.ListRecipientPatterns(ctx, id)
+	if err != nil {
+		return err
+	}
+	// The empty case is the permissive one here, so it gets a sentence rather than
+	// an omission: "none" under a heading called "allowed recipients" would read as
+	// a lock-down to anyone skimming.
+	if len(recipients) == 0 {
+		fmt.Println("\n  allowed recipients: any address (no restriction configured)")
 		return nil
 	}
-	fmt.Println("\n  allowed senders:")
+	fmt.Println("\n  allowed recipients:")
 	table := newTable()
 	fmt.Fprintln(table, "  PATTERN\tPATTERN ID")
-	for _, p := range stored {
+	for _, p := range recipients {
 		fmt.Fprintf(table, "  %s\t%s\n", p.Pattern, p.ID)
 	}
 	return table.Flush()
@@ -380,6 +435,109 @@ stays leaked.
 	}
 	fmt.Printf("revoked credential %s (%s) at %s\n", revoked.Name, revoked.ID, revoked.RevokedAt.Format("2006-01-02 15:04:05"))
 	return nil
+}
+
+// cmdCredentialRecipient manages the recipient allow-list.
+//
+// Its own action rather than a flag on `pattern`, because the two lists mean
+// opposite things when empty and a single command whose behaviour flips on a flag
+// is the kind of thing an operator gets wrong at 2am.
+func cmdCredentialRecipient(ctx context.Context, args []string) error {
+	usage := func(out *flag.FlagSet) func() {
+		return func() {
+			fmt.Fprint(out.Output(), `Usage:
+  relais credential recipient add <credential-id> -to '<pattern>' [-to ...]
+  relais credential recipient rm  <credential-id> <pattern-id>
+
+Restricts who a credential may send to, using the same grammar as sender
+patterns. A credential with no recipient pattern may send to ANY address:
+adding the first one narrows it, and removing the last one opens it up again.
+
+Use it for a credential that must not be able to reach real users by accident,
+for instance a staging application restricted to your own team's domain.
+`)
+		}
+	}
+
+	if len(args) < 2 {
+		fs := flag.NewFlagSet("relais credential recipient", flag.ContinueOnError)
+		fs.Usage = usage(fs)
+		fs.Usage()
+		return errors.New("an action and a credential id are required")
+	}
+
+	// Positional arguments first, for the same reason as in cmdCredentialPattern:
+	// the flag package stops at the first non-flag argument.
+	action, idArg, flagArgs := args[0], args[1], args[2:]
+
+	credentialID, err := uuid.Parse(idArg)
+	if err != nil {
+		return fmt.Errorf("%q is not a valid credential id: %w", idArg, err)
+	}
+
+	fs := flag.NewFlagSet("relais credential recipient "+action, flag.ContinueOnError)
+	var patterns stringList
+	fs.Var(&patterns, "to", "recipient pattern; repeat or comma-separate")
+	fs.Usage = usage(fs)
+	if err := fs.Parse(flagArgs); err != nil {
+		return err
+	}
+
+	sess, err := openSession(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	switch action {
+	case "add":
+		if len(patterns) == 0 {
+			fs.Usage()
+			return errors.New("at least one -to pattern is required")
+		}
+		added, err := sess.store.AddRecipientPatterns(ctx, credentialID, patterns)
+		if err != nil {
+			if errors.Is(err, store.ErrReference) {
+				return fmt.Errorf("no credential with id %s", credentialID)
+			}
+			return err
+		}
+		for _, p := range added {
+			fmt.Printf("recipients allowed: %s\n", p)
+		}
+		// The first pattern is the one that changes the credential's character, so
+		// it is worth naming the consequence rather than only the addition.
+		fmt.Println("this credential can now send only to the addresses listed above")
+		return nil
+
+	case "rm":
+		if fs.NArg() != 1 {
+			fs.Usage()
+			return errors.New("exactly one pattern id is required")
+		}
+		patternID, err := uuid.Parse(fs.Arg(0))
+		if err != nil {
+			return fmt.Errorf("%q is not a valid pattern id: %w", fs.Arg(0), err)
+		}
+		if err := sess.store.RemoveRecipientPattern(ctx, credentialID, patternID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("credential %s has no recipient pattern %s", credentialID, patternID)
+			}
+			return err
+		}
+		fmt.Printf("removed recipient pattern %s\n", patternID)
+
+		// Removing the last restriction is a widening, and silence would hide it.
+		remaining, err := sess.store.ListRecipientPatterns(ctx, credentialID)
+		if err == nil && len(remaining) == 0 {
+			fmt.Println("no restriction remains: this credential may now send to any address")
+		}
+		return nil
+
+	default:
+		fs.Usage()
+		return fmt.Errorf("unknown recipient action %q: want add or rm", action)
+	}
 }
 
 func cmdCredentialPattern(ctx context.Context, args []string) error {

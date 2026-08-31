@@ -175,6 +175,24 @@ func (f *fixture) credential(patterns ...string) store.AuthCredential {
 	return auth
 }
 
+// restrictRecipients narrows the fixture credential and refreshes the snapshot
+// the requests carry, because Request holds the credential by value.
+func (f *fixture) restrictRecipients(patterns ...string) {
+	f.t.Helper()
+
+	if _, err := f.store.AddRecipientPatterns(f.ctx, f.auth.Credential.ID, patterns); err != nil {
+		f.t.Fatalf("AddRecipientPatterns: %v", err)
+	}
+	auth, err := f.store.LoadCredential(f.ctx, f.auth.Credential.ID)
+	if err != nil {
+		f.t.Fatalf("LoadCredential: %v", err)
+	}
+	if !auth.Recipients.Restricted() {
+		f.t.Fatal("the credential is still unrestricted after adding recipient patterns")
+	}
+	f.auth = auth
+}
+
 func (f *fixture) request(raw string, recipients ...string) Request {
 	if len(recipients) == 0 {
 		recipients = []string{"someone@elsewhere.test"}
@@ -473,6 +491,149 @@ func TestSubmitRejectsEverythingWithoutPatterns(t *testing.T) {
 
 // A pattern can allow a sender whose domain has no route. That is a
 // configuration gap, and the message says which one.
+// --- recipient allow-list ---------------------------------------------------
+
+// The default has to keep working, and this is the test that says so. Every
+// credential that existed before recipient restrictions has an empty list, and an
+// empty list means "no restriction" — the opposite of the sender allow-list. Get
+// this wrong and the feature does not narrow anything, it stops all mail.
+func TestSubmitAllowsAnyRecipientWhenUnrestricted(t *testing.T) {
+	f := newFixture(t, "no-reply@example.com")
+
+	if f.auth.Recipients.Restricted() {
+		t.Fatal("a credential created without recipient patterns reports itself as restricted")
+	}
+
+	res, err := f.service.Submit(f.ctx, f.request(
+		message("no-reply@example.com"),
+		"anyone@a-real-customer.test", "someone-else@elsewhere.test",
+	))
+	if err != nil {
+		t.Fatalf("Submit refused a recipient for an unrestricted credential: %v", err)
+	}
+	if res.Status != store.StatusQueued {
+		t.Fatalf("status = %q, want queued", res.Status)
+	}
+	if f.enqueuer.count() != 1 {
+		t.Fatalf("%d jobs enqueued, want 1", f.enqueuer.count())
+	}
+}
+
+func TestSubmitAcceptsAnAllowedRecipient(t *testing.T) {
+	f := newFixture(t, "no-reply@example.com")
+	f.restrictRecipients("*@team.internal", "lead@partner.test")
+
+	for _, recipient := range []string{"dev@team.internal", "lead@partner.test"} {
+		res, err := f.service.Submit(f.ctx, f.request(message("no-reply@example.com"), recipient))
+		if err != nil {
+			t.Fatalf("Submit refused the allowed recipient %s: %v", recipient, err)
+		}
+		if len(res.Recipients) != 1 || res.Recipients[0] != recipient {
+			t.Fatalf("recipients = %v, want [%s]", res.Recipients, recipient)
+		}
+	}
+}
+
+// The case the feature exists for: a staging credential that must not be able to
+// mail a real customer by accident.
+func TestSubmitRejectsARecipientOutsideTheAllowList(t *testing.T) {
+	f := newFixture(t, "no-reply@example.com")
+	f.restrictRecipients("*@team.internal")
+
+	res, err := f.service.Submit(f.ctx, f.request(
+		message("no-reply@example.com"), "customer@real-business.test",
+	))
+	if err == nil {
+		t.Fatalf("Submit accepted a recipient outside the allow-list: %+v", res)
+	}
+
+	rejection, ok := AsRejection(err)
+	if !ok {
+		t.Fatalf("error is not a Rejection: %v", err)
+	}
+	if rejection.Reason != ReasonRecipientNotAllowed {
+		t.Fatalf("reason = %q, want %q", rejection.Reason, ReasonRecipientNotAllowed)
+	}
+	if rejection.Temporary {
+		t.Fatal("a recipient outside the allow-list must not be reported as retryable")
+	}
+	// The refused address belongs in the detail: it is what the operator reads in
+	// the client's error or the bounce, and it is what makes the refusal
+	// actionable.
+	if !strings.Contains(rejection.Detail, "customer@real-business.test") {
+		t.Fatalf("detail = %q, want it to name the refused recipient", rejection.Detail)
+	}
+
+	// Recorded, like a sender refusal: "this credential tried to mail that address"
+	// is the signal an operator needs after the fact.
+	if rejection.MessageID == uuid.Nil {
+		t.Fatal("the rejection was not persisted")
+	}
+	row, err := f.store.GetMessage(f.ctx, rejection.MessageID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if row.Status != store.StatusRejected {
+		t.Fatalf("status = %q, want rejected", row.Status)
+	}
+	if row.RejectionReason == nil || *row.RejectionReason != ReasonRecipientNotAllowed {
+		t.Fatalf("rejection_reason = %v", row.RejectionReason)
+	}
+	if len(row.EnvelopeRecipients) != 1 || row.EnvelopeRecipients[0] != "customer@real-business.test" {
+		t.Fatalf("envelope_recipients = %v, want the attempted recipient recorded", row.EnvelopeRecipients)
+	}
+
+	// Nothing left the building, and no content was kept.
+	if f.enqueuer.count() != 0 {
+		t.Fatalf("%d jobs enqueued for a rejected submission", f.enqueuer.count())
+	}
+	if f.countPayloads() != 0 {
+		t.Fatal("a payload was stored for a rejected submission")
+	}
+}
+
+// All or nothing. Delivering to the allowed recipients and dropping the rest
+// would mean a client believing it mailed three people when it mailed two, and a
+// silent partial send is worse than a refusal it can see.
+func TestSubmitRejectsEveryRecipientWhenOneIsOutsideTheAllowList(t *testing.T) {
+	f := newFixture(t, "no-reply@example.com")
+	f.restrictRecipients("*@team.internal")
+
+	_, err := f.service.Submit(f.ctx, f.request(
+		message("no-reply@example.com"),
+		"dev@team.internal", "customer@real-business.test", "other@team.internal",
+	))
+	if err == nil {
+		t.Fatal("Submit accepted a submission with one disallowed recipient")
+	}
+	rejection, ok := AsRejection(err)
+	if !ok || rejection.Reason != ReasonRecipientNotAllowed {
+		t.Fatalf("error = %v, want a recipient_not_allowed rejection", err)
+	}
+	if f.enqueuer.count() != 0 {
+		t.Fatal("a partial delivery was enqueued")
+	}
+}
+
+// A recipient restriction does not loosen the sender check, and the sender check
+// runs first. Both matter: an operator investigating a refusal needs the reason to
+// name the thing that was actually wrong.
+func TestSubmitReportsTheSenderFirstWhenBothAreDisallowed(t *testing.T) {
+	f := newFixture(t, "no-reply@example.com")
+	f.restrictRecipients("*@team.internal")
+
+	_, err := f.service.Submit(f.ctx, f.request(
+		message("someone-else@example.com"), "customer@real-business.test",
+	))
+	rejection, ok := AsRejection(err)
+	if !ok {
+		t.Fatalf("error is not a Rejection: %v", err)
+	}
+	if rejection.Reason != ReasonSenderNotAllowed {
+		t.Fatalf("reason = %q, want %q", rejection.Reason, ReasonSenderNotAllowed)
+	}
+}
+
 func TestSubmitRejectsUnconfiguredDomain(t *testing.T) {
 	f := newFixture(t, "*@*.other.test")
 

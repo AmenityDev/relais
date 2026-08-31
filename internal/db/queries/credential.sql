@@ -19,6 +19,9 @@ SELECT * FROM credential WHERE lookup = @lookup;
 -- name: GetCredential :one
 SELECT * FROM credential WHERE id = @id;
 
+-- ListCredentials carries both allow-list sizes, because they answer different
+-- questions and the UI shows both: pattern_count of 0 means the credential can
+-- send nothing, while recipient_pattern_count of 0 means it can send to anyone.
 -- name: ListCredentials :many
 SELECT
     c.*,
@@ -26,7 +29,12 @@ SELECT
         SELECT count(*)
         FROM credential_from_pattern p
         WHERE p.credential_id = c.id
-    ) AS pattern_count
+    ) AS pattern_count,
+    (
+        SELECT count(*)
+        FROM credential_recipient_pattern rp
+        WHERE rp.credential_id = c.id
+    ) AS recipient_pattern_count
 FROM credential c
 ORDER BY c.created_at DESC;
 
@@ -107,4 +115,24 @@ ORDER BY pattern;
 
 -- name: DeleteFromPattern :execrows
 DELETE FROM credential_from_pattern
+WHERE credential_id = @credential_id AND id = @id;
+
+-- AddRecipientPattern mirrors AddFromPattern, including the DO UPDATE that keeps
+-- RETURNING populated on a repeat grant.
+--
+-- The two allow-lists are deliberately separate tables; see migration 00002.
+-- name: AddRecipientPattern :one
+INSERT INTO credential_recipient_pattern (credential_id, pattern)
+VALUES (@credential_id, @pattern)
+ON CONFLICT (credential_id, pattern)
+    DO UPDATE SET pattern = EXCLUDED.pattern
+RETURNING *;
+
+-- name: ListRecipientPatterns :many
+SELECT * FROM credential_recipient_pattern
+WHERE credential_id = @credential_id
+ORDER BY pattern;
+
+-- name: DeleteRecipientPattern :execrows
+DELETE FROM credential_recipient_pattern
 WHERE credential_id = @credential_id AND id = @id;

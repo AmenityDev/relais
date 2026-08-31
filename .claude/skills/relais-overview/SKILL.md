@@ -32,8 +32,11 @@ before it is written.
   secret)` and are unrecoverable even with the whole database.
 - **An unauthorised `From` is rejected and recorded** with enough context to
   investigate a compromised credential — and **never** with the content of the message.
-- **A credential with no pattern can send as nobody.** The allow-list is closed by
+- **A credential with no pattern can send as nobody.** The sender allow-list is closed by
   default; an empty set matches nothing.
+- **The recipient allow-list is the one exception, and it is deliberate.** An empty
+  recipient list means *no restriction* (see D16 in `relais-architecture`). Never
+  "tidy up" the two to behave alike.
 - **Message content is not kept.** Payloads live until delivery succeeds, then are
   purged, and no endpoint returns them.
 - **No email content in logs, ever.** A rejection logs `credential_id`,

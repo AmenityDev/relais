@@ -91,8 +91,9 @@ Commands:
   domain add|list|rm|resolve
                            Manage sending domains, and ask which relay
                            carries one
-  credential create|list|show|revoke|pattern
-                           Manage sender credentials and their allow-lists
+  credential create|list|show|revoke|pattern|recipient
+                           Manage sender credentials, the addresses they may
+                           send as, and the addresses they may send to
   healthcheck              Probe the readiness endpoint (for HEALTHCHECK)
   openapi                  Emit the OpenAPI description of a surface
   version                  Print the build version

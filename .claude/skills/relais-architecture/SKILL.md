@@ -32,7 +32,7 @@ failing enqueuer leaves no row behind (proved by a test).
 | `db` | pgxpool, embedded goose migrations (`db/migrations`), sqlc sources (`db/queries`), generated code (`db/gen`, never hand-edited) |
 | `crypto` | AES-GCM keyring, HMAC+pepper, the `Secret` type |
 | `tlsconf` | certificate from mounted files or generated self-signed; reload on SIGHUP and by polling |
-| `frompattern` | the pattern grammar and matcher — the security core |
+| `frompattern` | the pattern grammar and matcher — the security core, shared by the sender and recipient allow-lists |
 | `store` | the only package that touches the tables |
 | `mailbuild` | REST JSON → RFC 5322 |
 | `mailnorm` | `From` extraction, injection of missing headers |
@@ -89,11 +89,26 @@ failing enqueuer leaves no row behind (proved by a test).
 - The grammar is **never** reimplemented in TypeScript (F5). The UI asks the admin API
   (`POST /admin/v1/patterns:validate`, `POST /admin/v1/credentials/{id}/patterns:test`).
 
+### The recipient allow-list is the same grammar with the opposite default (D16)
+
+A credential can also be restricted in who it may send **to** —
+`credential_recipient_pattern`, its own table so a forgotten discriminator can never let
+a recipient pattern authorise a sender.
+
+**An empty recipient list means no restriction.** That is the reverse of the sender list,
+and the reason `store.RecipientRules` exists rather than a bare `frompattern.Set`:
+`Set.Allows` answers false for an empty set, which is correct for senders and inverted
+for recipients. Use `RecipientRules.Allows` on the mail path (it carries the open
+default) and `MatchedBy` only to explain an answer. Enforcement lives in
+`ingest.validateRecipients`, checked against the **envelope** recipients, all-or-nothing:
+one disallowed address refuses the whole submission (`403` / `550 5.7.1`, recorded as a
+`rejected` row with reason `recipient_not_allowed`).
+
 ## Data model
 
-`smtp_backend`, `domain`, `credential`, `credential_from_pattern`, `email_message`,
-`email_payload` — plus river's own tables. One migration so far:
-`internal/db/migrations/00001_init.sql`.
+`smtp_backend`, `domain`, `credential`, `credential_from_pattern`,
+`credential_recipient_pattern`, `email_message`, `email_payload` — plus river's own
+tables. Migrations: `00001_init.sql`, `00002_recipient_patterns.sql`.
 
 `email_message.status ∈ {queued, sending, sent, failed, rejected}`,
 `facade ∈ {rest, smtp}`. Constraints encode the audit guarantees: a `sent` row must

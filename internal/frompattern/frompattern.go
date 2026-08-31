@@ -1,4 +1,9 @@
-// Package frompattern implements the sender allow-list grammar.
+// Package frompattern implements the address allow-list grammar.
+//
+// Named for its first use, the sender allow-list, and now shared with the
+// recipient allow-list (see store.RecipientRules): one grammar, one matcher, one
+// fuzz corpus. The error text still says "sender"; the layer that knows which
+// list is being edited supplies the operator-facing wording.
 //
 // A pattern is "local@domain" in exactly one of four shapes:
 //

@@ -211,6 +211,12 @@
               "null"
             ]
           },
+          "recipient_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "type": {
             "type": "string"
           },
@@ -236,6 +242,12 @@
             },
             "type": "array"
           },
+          "recipient_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "secret": {
             "type": "string"
           },
@@ -249,6 +261,7 @@
         "required": [
           "credential",
           "patterns",
+          "recipient_patterns",
           "secret",
           "warning"
         ],
@@ -298,6 +311,10 @@
               "null"
             ]
           },
+          "recipient_pattern_count": {
+            "format": "int64",
+            "type": "integer"
+          },
           "revoked_at": {
             "type": [
               "string",
@@ -322,6 +339,7 @@
           "pattern_count",
           "rate_limit_burst",
           "rate_limit_rps",
+          "recipient_pattern_count",
           "revoked_at",
           "state",
           "type"
@@ -829,6 +847,36 @@
         ],
         "type": "object"
       },
+      "RecipientTest": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "matched_pattern": {
+            "type": "string"
+          },
+          "patterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "restricted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "address",
+          "allowed",
+          "patterns",
+          "restricted"
+        ],
+        "type": "object"
+      },
       "ResolveResult": {
         "additionalProperties": false,
         "properties": {
@@ -902,6 +950,18 @@
         "type": "object"
       },
       "TestPatternInput": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "type": "object"
+      },
+      "TestRecipientInput": {
         "additionalProperties": false,
         "properties": {
           "address": {
@@ -1894,6 +1954,308 @@
           }
         },
         "summary": "Would this credential be allowed to send as this address"
+      }
+    },
+    "/admin/v1/credentials/{id}/recipient-patterns": {
+      "get": {
+        "description": "An empty list means no restriction: the credential may send to any address. That is the opposite of the sender allow-list, where an empty list permits nothing.",
+        "operationId": "listRecipientPatterns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatternList"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is not valid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, but not allowed to do this."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such thing, or not yours."
+          }
+        },
+        "summary": "The addresses this credential may send to"
+      },
+      "post": {
+        "description": "Adding the first pattern narrows a credential that could previously mail anyone. Same grammar as the sender allow-list.",
+        "operationId": "addRecipientPatterns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPatternsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatternList"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The body is not valid JSON."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is not valid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, but not allowed to do this."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such thing, or not yours."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was understood and is not acceptable."
+          }
+        },
+        "summary": "Restrict who this credential may send to",
+        "x-relais-requires-write": true
+      }
+    },
+    "/admin/v1/credentials/{id}/recipient-patterns/{patternID}": {
+      "delete": {
+        "description": "Removing the last pattern leaves the credential able to send to any address again.",
+        "operationId": "deleteRecipientPattern",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "patternID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success, with no body."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is not valid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, but not allowed to do this."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such thing, or not yours."
+          }
+        },
+        "summary": "Lift one recipient restriction",
+        "x-relais-requires-write": true
+      }
+    },
+    "/admin/v1/credentials/{id}/recipient-patterns:test": {
+      "post": {
+        "description": "Reports restricted=false when the credential carries no recipient patterns at all, because \"allowed\" then means \"allowed to mail anyone\" rather than \"matched a rule you wrote\".",
+        "operationId": "testRecipient",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestRecipientInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipientTest"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The body is not valid JSON."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is not valid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, but not allowed to do this."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such thing, or not yours."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was understood and is not acceptable."
+          }
+        },
+        "summary": "Would this credential be allowed to send to this address"
       }
     },
     "/admin/v1/credentials/{id}:revoke": {

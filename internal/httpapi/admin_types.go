@@ -123,6 +123,12 @@ type credentialResponse struct {
 	// can send as nobody without a second request per row.
 	PatternCount int64 `json:"pattern_count"`
 
+	// RecipientPatternCount counts the recipient allow-list, where zero means the
+	// opposite of what it means above: no restriction, so this credential may mail
+	// any address. A UI rendering both counts the same way would tell an operator
+	// that an unrestricted credential is a locked-down one.
+	RecipientPatternCount int64 `json:"recipient_pattern_count"`
+
 	CreatedBy  string  `json:"created_by"`
 	CreatedAt  string  `json:"created_at"`
 	LastUsedAt *string `json:"last_used_at"`
@@ -140,21 +146,22 @@ func credentialState(enabled bool, revokedAt *time.Time) string {
 	}
 }
 
-func newCredentialResponse(row dbgen.Credential, patternCount int64) credentialResponse {
+func newCredentialResponse(row dbgen.Credential, patternCount, recipientPatternCount int64) credentialResponse {
 	return credentialResponse{
-		ID:             row.ID.String(),
-		Name:           row.Name,
-		Type:           row.Type,
-		Lookup:         row.Lookup,
-		State:          credentialState(row.Enabled, row.RevokedAt),
-		Enabled:        row.Enabled,
-		RateLimitRPS:   row.RateLimitRps,
-		RateLimitBurst: row.RateLimitBurst,
-		PatternCount:   patternCount,
-		CreatedBy:      row.CreatedBy,
-		CreatedAt:      row.CreatedAt.UTC().Format(time.RFC3339),
-		LastUsedAt:     rfc3339(row.LastUsedAt),
-		RevokedAt:      rfc3339(row.RevokedAt),
+		ID:                    row.ID.String(),
+		Name:                  row.Name,
+		Type:                  row.Type,
+		Lookup:                row.Lookup,
+		State:                 credentialState(row.Enabled, row.RevokedAt),
+		Enabled:               row.Enabled,
+		RateLimitRPS:          row.RateLimitRps,
+		RateLimitBurst:        row.RateLimitBurst,
+		PatternCount:          patternCount,
+		RecipientPatternCount: recipientPatternCount,
+		CreatedBy:             row.CreatedBy,
+		CreatedAt:             row.CreatedAt.UTC().Format(time.RFC3339),
+		LastUsedAt:            rfc3339(row.LastUsedAt),
+		RevokedAt:             rfc3339(row.RevokedAt),
 	}
 }
 
@@ -173,7 +180,10 @@ type createdCredentialResponse struct {
 	// separately from the password.
 	Username string   `json:"username,omitempty"`
 	Patterns []string `json:"patterns"`
-	Warning  string   `json:"warning"`
+	// RecipientPatterns is the recipient allow-list the credential was created
+	// with. Empty means it may mail anyone, which is why the warning says so.
+	RecipientPatterns []string `json:"recipient_patterns"`
+	Warning           string   `json:"warning"`
 }
 
 // patternResponse describes one entry of a credential's allow-list.
@@ -187,6 +197,21 @@ type patternResponse struct {
 }
 
 func newPatternResponse(row dbgen.CredentialFromPattern) patternResponse {
+	return patternResponse{
+		ID:          row.ID.String(),
+		Pattern:     row.Pattern,
+		Explanation: explainPattern(row.Pattern),
+		CreatedAt:   row.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// newRecipientPatternResponse renders a recipient allow-list entry.
+//
+// Same shape as the sender one, deliberately: the two tables are separate (so a
+// query cannot mix them) but the grammar and the explanation are identical, and a
+// second response schema describing the same four fields would only invite the
+// two to drift in the documentation.
+func newRecipientPatternResponse(row dbgen.CredentialRecipientPattern) patternResponse {
 	return patternResponse{
 		ID:          row.ID.String(),
 		Pattern:     row.Pattern,
@@ -366,6 +391,33 @@ type patternTestResponse struct {
 	// would send an operator away believing the setup works.
 	RoutableDomain bool   `json:"routable_domain"`
 	BackendName    string `json:"backend_name,omitempty"`
+}
+
+// recipientTestResponse answers "may this credential send to this address?".
+type recipientTestResponse struct {
+	Address string `json:"address"`
+	Allowed bool   `json:"allowed"`
+	// Restricted distinguishes the two ways Allowed can be true: a pattern the
+	// operator wrote matched, or there are no patterns at all and this credential
+	// may mail the entire internet. A UI showing only Allowed would present the
+	// second as if it were the first.
+	Restricted     bool     `json:"restricted"`
+	MatchedPattern string   `json:"matched_pattern,omitempty"`
+	Patterns       []string `json:"patterns"`
+}
+
+func newRecipientTestResponse(result store.RecipientTestResult) recipientTestResponse {
+	patterns := result.Patterns
+	if patterns == nil {
+		patterns = []string{}
+	}
+	return recipientTestResponse{
+		Address:        result.Address,
+		Allowed:        result.Allowed,
+		Restricted:     result.Restricted,
+		MatchedPattern: result.MatchedPattern,
+		Patterns:       patterns,
+	}
 }
 
 func newPatternTestResponse(result store.PatternTestResult) patternTestResponse {
