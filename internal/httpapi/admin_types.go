@@ -292,39 +292,6 @@ func newAdminMessageResponse(row dbgen.ListEmailMessagesRow) messageResponseAdmi
 	return response
 }
 
-func newAdminMessageDetail(row dbgen.EmailMessage) messageResponseAdmin {
-	response := messageResponseAdmin{
-		ID:              row.ID.String(),
-		Status:          row.Status,
-		Facade:          row.Facade,
-		From:            row.FromAddr,
-		To:              row.ToAddrs,
-		Cc:              row.CcAddrs,
-		Bcc:             row.BccAddrs,
-		Subject:         row.Subject,
-		Recipients:      row.EnvelopeRecipients,
-		MessageID:       row.MessageID,
-		SizeBytes:       row.SizeBytes,
-		Attempts:        row.AttemptCount,
-		CreatedAt:       row.CreatedAt.UTC().Format(time.RFC3339),
-		SentAt:          rfc3339(row.SentAt),
-		RejectionReason: row.RejectionReason,
-	}
-	if row.CredentialID != nil {
-		response.CredentialID = row.CredentialID.String()
-	}
-	if row.RemoteIp != nil {
-		response.RemoteIP = row.RemoteIp.String()
-	}
-	if row.ErrorCode != nil {
-		response.Error = &messageError{Code: *row.ErrorCode}
-		if row.ErrorDetail != nil {
-			response.Error.Detail = *row.ErrorDetail
-		}
-	}
-	return response
-}
-
 // listResponse wraps a page, with the cursor for the next one.
 type listResponse[T any] struct {
 	Data []T `json:"data"`

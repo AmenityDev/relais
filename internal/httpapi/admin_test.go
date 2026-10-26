@@ -1256,6 +1256,30 @@ func TestGetMessageNeverReturnsThePayload(t *testing.T) {
 	}
 }
 
+// The detail once came from a query without the joins the listing has, so it
+// named neither the credential nor the relay: the two fields an operator needs to
+// tell which application sent a failed message and which backend refused it.
+func TestGetMessageNamesItsCredentialAndBackend(t *testing.T) {
+	f := newAdminFixture(t)
+	backendID, _, credentialID := f.seed()
+
+	row, err := f.store.InsertQueuedMessage(f.ctx, store.NewMessageParams{
+		CredentialID: credentialID, Facade: store.FacadeREST,
+		FromAddr: "no-reply@example.com", FromDomain: "example.com",
+		EnvelopeRecipients: []string{"a@elsewhere.test"}, Subject: "Subject line",
+		MessageID: "<a@example.com>", BackendID: backendID,
+	}, []byte("From: no-reply@example.com\r\n\r\nbody"), func(context.Context, pgx.Tx, uuid.UUID) error { return nil })
+	if err != nil {
+		t.Fatalf("InsertQueuedMessage: %v", err)
+	}
+
+	detail := decodeBody[messageResponseAdmin](t,
+		f.do(http.MethodGet, "/admin/v1/messages/"+row.ID.String(), f.adminToken(), ""))
+	if detail.CredentialName != "app" || detail.BackendName != "oci" {
+		t.Fatalf("credential_name = %q, backend_name = %q", detail.CredentialName, detail.BackendName)
+	}
+}
+
 func TestStats(t *testing.T) {
 	f := newAdminFixture(t)
 	f.seed()

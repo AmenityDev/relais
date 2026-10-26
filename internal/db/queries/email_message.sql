@@ -36,6 +36,21 @@ VALUES (@email_message_id, @raw);
 -- name: GetEmailMessage :one
 SELECT * FROM email_message WHERE id = @id;
 
+-- GetAdminEmailMessage is GetEmailMessage with the names an operator reads,
+-- joined exactly as ListEmailMessages joins them. The select list is kept
+-- identical to that query on purpose: the two generated row types then convert
+-- into one another, and the detail and list responses are built by one function
+-- instead of two that drift apart.
+-- name: GetAdminEmailMessage :one
+SELECT
+    m.*,
+    c.name AS credential_name,
+    b.name AS backend_name
+FROM email_message m
+LEFT JOIN credential c ON c.id = m.credential_id
+LEFT JOIN smtp_backend b ON b.id = m.smtp_backend_id
+WHERE m.id = @id;
+
 -- GetEmailMessageByIdempotencyKey backs the retry-safe submission path: a client
 -- that retries after a timeout gets the original message back instead of sending
 -- a second copy.

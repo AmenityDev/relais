@@ -1076,7 +1076,7 @@ func (s *AdminServer) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := s.store.GetMessage(r.Context(), id)
+	row, err := s.store.GetAdminMessage(r.Context(), id)
 	if err != nil {
 		s.writeStoreError(w, "get message", err)
 		return
@@ -1084,7 +1084,7 @@ func (s *AdminServer) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	// No payload, ever. An admin sees metadata and delivery status; the message
 	// body is not theirs to read, and an endpoint that returned it would make the
 	// admin API a mail archive.
-	writeJSON(w, http.StatusOK, newAdminMessageDetail(row))
+	writeJSON(w, http.StatusOK, newAdminMessageResponse(row))
 }
 
 // --- helpers ----------------------------------------------------------------

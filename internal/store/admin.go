@@ -170,6 +170,19 @@ type MessageFilter struct {
 	BeforeID        uuid.UUID
 }
 
+// GetAdminMessage returns one message with the credential and backend names
+// the admin interface shows, which GetMessage does not carry.
+//
+// The row converts to ListEmailMessagesRow: the two queries select the same
+// columns, so the HTTP layer builds both responses with one function.
+func (s *Store) GetAdminMessage(ctx context.Context, id uuid.UUID) (dbgen.ListEmailMessagesRow, error) {
+	row, err := s.q.GetAdminEmailMessage(ctx, id)
+	if err != nil {
+		return dbgen.ListEmailMessagesRow{}, wrap("get email message", err)
+	}
+	return dbgen.ListEmailMessagesRow(row), nil
+}
+
 // ListMessages returns a page of messages, newest first.
 func (s *Store) ListMessages(ctx context.Context, filter MessageFilter) ([]dbgen.ListEmailMessagesRow, error) {
 	if filter.Limit <= 0 {

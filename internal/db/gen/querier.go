@@ -39,6 +39,12 @@ type Querier interface {
 	// ON DELETE RESTRICT foreign key. That refusal is intentional: silently
 	// orphaning a domain would break delivery at send time instead of at edit time.
 	DeleteSMTPBackend(ctx context.Context, id uuid.UUID) (int64, error)
+	// GetAdminEmailMessage is GetEmailMessage with the names an operator reads,
+	// joined exactly as ListEmailMessages joins them. The select list is kept
+	// identical to that query on purpose: the two generated row types then convert
+	// into one another, and the detail and list responses are built by one function
+	// instead of two that drift apart.
+	GetAdminEmailMessage(ctx context.Context, id uuid.UUID) (GetAdminEmailMessageRow, error)
 	GetCredential(ctx context.Context, id uuid.UUID) (Credential, error)
 	// GetCredentialByLookup deliberately returns revoked and disabled rows too.
 	//

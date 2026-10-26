@@ -45,6 +45,83 @@ func (q *Queries) CountEmailsByStatus(ctx context.Context) ([]CountEmailsByStatu
 	return items, nil
 }
 
+const getAdminEmailMessage = `-- name: GetAdminEmailMessage :one
+SELECT
+    m.id, m.credential_id, m.status, m.facade, m.from_addr, m.from_domain, m.to_addrs, m.cc_addrs, m.bcc_addrs, m.envelope_recipients, m.subject, m.message_id, m.size_bytes, m.smtp_backend_id, m.idempotency_key, m.attempt_count, m.error_code, m.error_detail, m.rejection_reason, m.remote_ip, m.created_at, m.updated_at, m.sent_at,
+    c.name AS credential_name,
+    b.name AS backend_name
+FROM email_message m
+LEFT JOIN credential c ON c.id = m.credential_id
+LEFT JOIN smtp_backend b ON b.id = m.smtp_backend_id
+WHERE m.id = $1
+`
+
+type GetAdminEmailMessageRow struct {
+	ID                 uuid.UUID
+	CredentialID       *uuid.UUID
+	Status             string
+	Facade             string
+	FromAddr           string
+	FromDomain         string
+	ToAddrs            []string
+	CcAddrs            []string
+	BccAddrs           []string
+	EnvelopeRecipients []string
+	Subject            string
+	MessageID          string
+	SizeBytes          int32
+	SmtpBackendID      *uuid.UUID
+	IdempotencyKey     *string
+	AttemptCount       int32
+	ErrorCode          *string
+	ErrorDetail        *string
+	RejectionReason    *string
+	RemoteIp           *netip.Addr
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	SentAt             *time.Time
+	CredentialName     *string
+	BackendName        *string
+}
+
+// GetAdminEmailMessage is GetEmailMessage with the names an operator reads,
+// joined exactly as ListEmailMessages joins them. The select list is kept
+// identical to that query on purpose: the two generated row types then convert
+// into one another, and the detail and list responses are built by one function
+// instead of two that drift apart.
+func (q *Queries) GetAdminEmailMessage(ctx context.Context, id uuid.UUID) (GetAdminEmailMessageRow, error) {
+	row := q.db.QueryRow(ctx, getAdminEmailMessage, id)
+	var i GetAdminEmailMessageRow
+	err := row.Scan(
+		&i.ID,
+		&i.CredentialID,
+		&i.Status,
+		&i.Facade,
+		&i.FromAddr,
+		&i.FromDomain,
+		&i.ToAddrs,
+		&i.CcAddrs,
+		&i.BccAddrs,
+		&i.EnvelopeRecipients,
+		&i.Subject,
+		&i.MessageID,
+		&i.SizeBytes,
+		&i.SmtpBackendID,
+		&i.IdempotencyKey,
+		&i.AttemptCount,
+		&i.ErrorCode,
+		&i.ErrorDetail,
+		&i.RejectionReason,
+		&i.RemoteIp,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SentAt,
+		&i.CredentialName,
+		&i.BackendName,
+	)
+	return i, err
+}
+
 const getEmailMessage = `-- name: GetEmailMessage :one
 SELECT id, credential_id, status, facade, from_addr, from_domain, to_addrs, cc_addrs, bcc_addrs, envelope_recipients, subject, message_id, size_bytes, smtp_backend_id, idempotency_key, attempt_count, error_code, error_detail, rejection_reason, remote_ip, created_at, updated_at, sent_at FROM email_message WHERE id = $1
 `
