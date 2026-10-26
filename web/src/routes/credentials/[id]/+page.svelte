@@ -26,6 +26,14 @@
 	<Badge>{data.credential.type}</Badge>
 </h1>
 
+{#if data.credential.type === 'smtp_user'}
+	<!-- The lookup is the username for an smtp_user: the public half, which SMTP AUTH
+	     sends separately and an operator matches against a client's configuration. -->
+	<p class="mt-2 text-sm text-slate-500" data-testid="smtp-username">
+		Username <code class="font-mono text-slate-900 select-all">{data.credential.lookup}</code>
+	</p>
+{/if}
+
 {#if form && 'message' in form && form.message}
 	<p
 		class="mt-4 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800"
