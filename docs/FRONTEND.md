@@ -222,7 +222,7 @@ Implemented in M7, and verified: a cross-port request returns `404` on both side
 | Dashboard | counts per status, latest rejections | `GET /admin/v1/stats`, `GET /admin/v1/messages?status=rejected` |
 | Backends | table, creation (write-only password), connection test | `GET/POST/PATCH/DELETE /admin/v1/backends`, `POST .../backends/{id}:test` |
 | Domains | table, `include_subdomains` explained, dry-run resolution | `GET/POST/PATCH/DELETE /admin/v1/domains`, `GET /admin/v1/domains:resolve?sender=` |
-| Credentials | table, creation → secret shown once, rotation → the same show-once panel, revocation, deletion | `GET/POST /admin/v1/credentials`, `POST .../credentials/{id}:revoke`, `POST .../credentials/{id}:rotate`, `DELETE .../credentials/{id}` |
+| Credentials | table with search (name, username or key prefix) and filters (type, state, allow-lists) in the URL, creation → secret shown once, rotation → the same show-once panel, revocation, deletion | `GET/POST /admin/v1/credentials`, `POST .../credentials/{id}:revoke`, `POST .../credentials/{id}:rotate`, `DELETE .../credentials/{id}` |
 | Patterns | list, validated-as-you-type add, address test | `POST/DELETE .../credentials/{id}/patterns`, `patterns:validate`, `patterns:test` |
 | Recipient restrictions | list, add, address test, and the unrestricted state said out loud | `GET/POST/DELETE .../credentials/{id}/recipient-patterns`, `recipient-patterns:test` |
 | Messages | paginated list (keyset), filters, detail with the SMTP error | `GET /admin/v1/messages`, `GET /admin/v1/messages/{id}` |

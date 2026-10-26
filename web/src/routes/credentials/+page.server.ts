@@ -6,11 +6,13 @@ import {
 	type CreatedCredential,
 	type Credential
 } from '$lib/server/api';
+import { filterCredentials, parseFilter, STATES, TYPES } from '$lib/server/credential-filter';
 import { requireSession } from '$lib/server/session';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, parent }) => {
+export const load: PageServerLoad = async ({ locals, parent, url }) => {
 	const { identity } = await parent();
+	const filter = parseFilter(url.searchParams);
 	try {
 		const list = await apiFetch<{ data: Credential[]; next_cursor?: string }>(
 			requireSession(locals).accessToken,
@@ -18,7 +20,12 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
 			{ requestId: locals.requestId }
 		);
 		return {
-			credentials: list.data,
+			credentials: filterCredentials(list.data, filter),
+			total: list.data.length,
+			filter,
+			types: TYPES,
+			states: STATES,
+			filtered: Object.values(filter).some((v) => v !== ''),
 			// The API returns every row today and sets no cursor. If it ever starts
 			// paginating this endpoint, showing page one silently would hide rows from
 			// an operator making a decision; surfacing the cursor's presence does not.

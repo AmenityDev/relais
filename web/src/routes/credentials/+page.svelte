@@ -153,9 +153,93 @@
 	</p>
 {/if}
 
-<div class="mt-6">
-	{#if data.credentials.length === 0}
+{#if data.total > 0}
+	<!-- A GET form, so a filtered view is a URL: it survives a reload, can be shared,
+	     and works without JavaScript. The selects submit on change as a convenience. -->
+	<form
+		method="GET"
+		role="search"
+		aria-label="Filter credentials"
+		class="mt-6 flex flex-wrap items-end gap-3"
+	>
+		<label class="flex min-w-48 flex-1 flex-col gap-1 text-xs font-medium text-slate-600">
+			Search
+			<input
+				type="search"
+				name="q"
+				value={data.filter.q}
+				placeholder="Name or username"
+				class="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-normal"
+			/>
+		</label>
+		<label class="flex flex-col gap-1 text-xs font-medium text-slate-600">
+			Type
+			<select
+				name="type"
+				onchange={(e) => e.currentTarget.form?.requestSubmit()}
+				class="rounded-md border border-slate-300 px-2 py-1.5 text-sm font-normal"
+			>
+				<option value="" selected={data.filter.type === ''}>Any</option>
+				{#each data.types as type (type)}
+					<option value={type} selected={data.filter.type === type}>{type}</option>
+				{/each}
+			</select>
+		</label>
+		<label class="flex flex-col gap-1 text-xs font-medium text-slate-600">
+			State
+			<select
+				name="state"
+				onchange={(e) => e.currentTarget.form?.requestSubmit()}
+				class="rounded-md border border-slate-300 px-2 py-1.5 text-sm font-normal"
+			>
+				<option value="" selected={data.filter.state === ''}>Any</option>
+				{#each data.states as state (state)}
+					<option value={state} selected={data.filter.state === state}>{state}</option>
+				{/each}
+			</select>
+		</label>
+		<label class="flex flex-col gap-1 text-xs font-medium text-slate-600">
+			Allow-lists
+			<select
+				name="allow_list"
+				onchange={(e) => e.currentTarget.form?.requestSubmit()}
+				class="rounded-md border border-slate-300 px-2 py-1.5 text-sm font-normal"
+			>
+				<option value="" selected={data.filter.allowList === ''}>Any</option>
+				<option value="no_sender" selected={data.filter.allowList === 'no_sender'}>
+					No allowed sender
+				</option>
+				<option value="any_recipient" selected={data.filter.allowList === 'any_recipient'}>
+					Unrestricted recipients
+				</option>
+			</select>
+		</label>
+		<button
+			type="submit"
+			class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+		>
+			Filter
+		</button>
+		{#if data.filtered}
+			<a href={resolve('/credentials')} class="py-1.5 text-sm text-brand-700 hover:underline">
+				Clear
+			</a>
+			<p class="w-full text-xs text-slate-500" data-testid="filter-count">
+				{data.credentials.length} of {data.total} credentials
+			</p>
+		{/if}
+	</form>
+{/if}
+
+<div class="mt-4">
+	{#if data.total === 0}
 		<EmptyState title="No credentials" hint="Create one for each application that sends mail." />
+	{:else if data.credentials.length === 0}
+		<EmptyState title="No credential matches these filters">
+			<a href={resolve('/credentials')} class="text-sm font-medium text-brand-700 hover:underline">
+				Show all {data.total}
+			</a>
+		</EmptyState>
 	{:else}
 		<Table
 			columns={['Name', 'Type', 'Senders', 'Recipients', 'State', '']}
@@ -171,6 +255,11 @@
 						>
 							{credential.name}
 						</a>
+						{#if credential.type === 'smtp_user'}
+							<span class="block font-mono text-xs font-normal text-slate-500"
+								>{credential.lookup}</span
+							>
+						{/if}
 					</td>
 					<td class="px-4 py-2.5 text-xs">{credential.type}</td>
 					<td class="px-4 py-2.5">
